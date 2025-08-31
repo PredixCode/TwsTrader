@@ -8,6 +8,24 @@ from ib_insync import Stock as IBStock
 from connection import TwsConnection
 
 
+from enum import IntEnum
+class MarketDataType(IntEnum):
+    LIVE = 1
+    DELAYED = 3
+    FROZEN = 2
+    DELAYED_FROZEN = 4
+
+    @classmethod
+    def names(cls):
+        return [e.name for e in cls]
+    @classmethod
+    def values(cls):
+        return [e.value for e in cls]
+    @classmethod
+    def entries(cls):
+        return [(e.name, e.value) for e in cls]
+
+
 class Stock:
     """
     Ib_insync wrapper for a specified Stock, with streaming + basic trading.
@@ -36,7 +54,7 @@ class Stock:
     def _subscribe(self, md_type: int) -> Ticker:
         ib = self.conn.connect()
         self.qualify()
-        ib.reqMarketDataType(md_type)  # 1 live, 3 delayed-streaming, 4 delayed-frozen, 2 frozen
+        ib.reqMarketDataType(md_type)
         try:
             ib.cancelMktData(self.contract)
         except Exception:
@@ -59,17 +77,16 @@ class Stock:
                 return x is not None and not (isinstance(x, float) and math.isnan(x))
             return ok(getattr(t, 'last', None)) or ok(getattr(t, 'bid', None)) or ok(getattr(t, 'ask', None))
 
-        def __find__md_for_ticker() -> Ticker|None:
+        def __find__market_for_ticker() -> Ticker|None:
             print("Discovering available market data types (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen) to fetch data.")
-            for md in (1, 3, 4, 2):
-                t = self._subscribe(md)
-                print(f"Trying market type '{md}'...")
-                if __is_valid(t):
-                    self.market_data_type = md
-                    self._ticker = t
-                    print(f"Market Type '{md}' returned valid data...")
-                    return t
-            # Fallback: return last attempted ticker
+            for md_name, md_value in MarketDataType.entries():
+                ticker = self._subscribe(md_value)
+                print(f"Trying market type '{md_name}'...")
+                if __is_valid(ticker):
+                    self.market_data_type = md_value
+                    self._ticker = ticker
+                    print(f"Market Type '{md_name}' returned valid data...")
+                    return ticker
             return None
 
         if self._ticker is not None:
@@ -88,7 +105,7 @@ class Stock:
                 self.market_data_type = market_data_type
                 return t
 
-        ticker = __find__md_for_ticker()
+        ticker = __find__market_for_ticker()
         if ticker is None:
             raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock=(Symbol,Exchange,Currency)\n"+
                             "HINT: Either the stock parameters are invalid OR the market data for this stock is not subscribed.")
