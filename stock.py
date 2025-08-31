@@ -116,7 +116,7 @@ class Stock:
         bid = t.bid if t.bid is not None else float('nan')
         ask = t.ask if t.ask is not None else float('nan')
         last = t.last if t.last is not None else float('nan')
-        mid = (bid + ask)/2 if not math.isnan(bid) or not math.isnan(ask) else float('nan')
+        mid = (bid + ask)/2 if (not math.isnan(bid) and not math.isnan(ask)) else float('nan')
         return dict(symbol=self.symbol, bid=bid, ask=ask, last=last, mid=mid,
                     bidSize=t.bidSize or 0, askSize=t.askSize or 0, lastSize=t.lastSize or 0)
     
