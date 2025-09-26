@@ -1,1 +1,3 @@
 ib_insync
+yfinance
+plotly
