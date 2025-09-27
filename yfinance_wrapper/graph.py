@@ -119,17 +119,3 @@ class LightweightGraph:
             df.index = df.index.tz_convert(None)
         return df
 
-if __name__ == "__main__":
-    # --- 1. Setup ---
-    stock = FinanceStock("RHM.DE")
-    # --- 2. Data Preparation ---
-    data = stock.get_all_historical_data()
-    if data.empty:
-        raise SystemExit("Cannot create visualization, no data was fetched.")
-    # --- 3. Save Data to CSV ---
-    path_to_csv = stock.last_fetch_to_csv()
-    # --- 4. Visualize the Data ---
-    visualizer = WebGraph(csv_file_path=path_to_csv)
-    visualizer.plot_candlestick()
-    
-

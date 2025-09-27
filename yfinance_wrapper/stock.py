@@ -164,7 +164,7 @@ class FinanceStock:
         self.last_fetch = resampled_data.copy()
         return resampled_data
 
-    def last_fetch_to_csv(self, path="market/data/csv/"):
+    def last_fetch_to_csv(self):
         """
         Saves the last fetched pandas DataFrame to a CSV file.
         Works after calling either get_historical_data() or get_historical_data_by_range().
@@ -175,7 +175,9 @@ class FinanceStock:
 
         # Sanitize the name to make it a valid filename
         safe_filename = "".join([c for c in self.name if c.isalpha() or c.isdigit() or c.isspace()]).rstrip()
-        filename = path + safe_filename + '.csv'
+        file_dir = os.path.dirname(os.path.realpath(__file__))
+        path = f"{file_dir}\data\csv"
+        filename = f"{path}\{safe_filename}.csv"
         try:
             self.last_fetch.index.name = 'Datetime'
             self.last_fetch.to_csv(filename)

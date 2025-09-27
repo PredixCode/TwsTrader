@@ -10,11 +10,12 @@ class FetchQueue:
     """
     Manages and optimizes data fetching with persistent, on-disk caching.
     """
-    def __init__(self, cache_file="y_finance/util/fetch_cache.pkl"):
+    def __init__(self, cache_file=r"fetch_cache.pkl"):
         """
         Initializes the queue and loads the cache from disk if it exists.
         """
-        self.cache_file = cache_file
+        file_dir = os.path.dirname(os.path.realpath(__file__))
+        self.cache_file = f"{file_dir}\{cache_file}"
         self._cache = {}
         self._load_cache() # Load the cache from the file upon initialization
 
