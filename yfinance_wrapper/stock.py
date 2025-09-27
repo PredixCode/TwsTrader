@@ -4,9 +4,9 @@ import pandas as pd
 from datetime import datetime
 
 try:
-    from y_finance.util.fetch_queue import FetchQueue
+    from yfinance_wrapper.util.fetch_queue import FetchQueue
 except:
-    from y_finance.util.fetch_queue import FetchQueue
+    from yfinance_wrapper.util.fetch_queue import FetchQueue
 
 
 
@@ -47,7 +47,7 @@ class FinanceStock:
             print(f"An error occurred while fetching the live price: {e}")
             return None
 
-    def get_historical_data(self, period: str = "7d", interval: str = "1m", queue: FetchQueue = None):
+    def get_historical_data(self, period: str = "7d", interval: str = "1m", queue: FetchQueue = None) -> pd.DataFrame:
         """
             period (str): Valid periods: "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max".
             interval (str):Valid intervals: "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo".
@@ -85,7 +85,7 @@ class FinanceStock:
             print(f"An error occurred while fetching data by range: {e}")
             return pd.DataFrame()
 
-    def get_all_historical_data(self, queue: FetchQueue=None):
+    def get_all_historical_data(self, queue: FetchQueue=None) -> pd.DataFrame:
         print(f"\n--- Starting comprehensive data fetch for {self.name} ---")
         period = "max"
         intervals = ["1m", "2m", "5m", "1h", "1d", "1mo"]
@@ -103,7 +103,7 @@ class FinanceStock:
         self.last_fetch = all_history.copy()
         return all_history
 
-    def get_all_historical_data_accurate(self, queue: FetchQueue = None):
+    def get_all_historical_data_accurate(self, queue: FetchQueue = None) -> pd.DataFrame:
         """
         Fetches high-frequency historical data and resamples it to a consistent
         1-minute interval, creating the ideal dataset for AI training.

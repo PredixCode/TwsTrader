@@ -2,7 +2,7 @@
 from ib_insync import util
 util.logToConsole()
 
-from tws.connection import TwsConnection
+from tws_wrapper.connection import TwsConnection
 from unified.bot import UnifiedTradingBot, BotConfig, SymbolMapping
 from unified.strategy.sfi_charlie import SfiCharlieStrategy, SfiCharlieConfig
 

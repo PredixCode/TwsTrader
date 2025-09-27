@@ -1,3 +1,4 @@
 ib_insync
 yfinance
 lightweight-charts
+plotly

@@ -5,7 +5,7 @@ from datetime import datetime
 from ib_insync import Ticker, Contract
 from ib_insync import Stock as IBStock
 
-from tws.connection import TwsConnection
+from tws_wrapper.connection import TwsConnection
 
 
 from enum import IntEnum

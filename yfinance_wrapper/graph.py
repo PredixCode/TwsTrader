@@ -1,11 +1,16 @@
+import os
 import pandas as pd
 import plotly.graph_objects as go
-import os
+from lightweight_charts import Chart
 
-class FinanceGraph:
+
+from yfinance_wrapper.stock import FinanceStock
+
+
+class WebGraph:
     """
     A class to create financial visualizations from market data stored in CSV files.
-    """
+    """    
     def __init__(self, csv_file_path: str):
         """
         Initializes the Visualizer by loading and preparing data from a CSV file.
@@ -88,9 +93,33 @@ class FinanceGraph:
         self.fig.write_html(output_path)
         print(f"✅ Success! Interactive chart saved to: {os.path.abspath(output_path)}")
 
-if __name__ == "__main__":
-    from stock import FinanceStock
 
+
+class LightweightGraph:
+    def __init__(self, stock: FinanceStock) -> None:
+        # Lazy import so importing this module never starts subprocesses
+
+        df = stock.get_all_historical_data()
+        if df is None or df.empty:
+            raise ValueError("No stock data returned, can't construct chart.")
+        
+        self.df = self.__normalize_dataframe(df)
+        self.chart = Chart(title=stock.name, maximize=True)
+        self.chart.set(df)
+
+    def show(self, block: bool = True) -> None:
+        self.chart.show(block=block)
+
+    def  __normalize_dataframe(self, df: pd.DataFrame):
+        # Normalize OHLC for lightweight-charts
+        df = df[["Open", "High", "Low", "Close"]].rename(
+            columns={"Open": "open", "High": "high", "Low": "low", "Close": "close"}
+        )
+        if getattr(df.index, "tz", None) is not None:
+            df.index = df.index.tz_convert(None)
+        return df
+
+if __name__ == "__main__":
     # --- 1. Setup ---
     stock = FinanceStock("RHM.DE")
     # --- 2. Data Preparation ---
@@ -100,7 +129,7 @@ if __name__ == "__main__":
     # --- 3. Save Data to CSV ---
     path_to_csv = stock.last_fetch_to_csv()
     # --- 4. Visualize the Data ---
-    visualizer = FinanceGraph(csv_file_path=path_to_csv)
+    visualizer = WebGraph(csv_file_path=path_to_csv)
     visualizer.plot_candlestick()
     
 

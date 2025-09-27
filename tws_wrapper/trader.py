@@ -1,8 +1,8 @@
 import time
 from ib_insync import MarketOrder, LimitOrder, Trade
 
-from tws.connection import TwsConnection
-from tws.stock import TwsStock
+from tws_wrapper.connection import TwsConnection
+from tws_wrapper.stock import TwsStock
 
 
 class TwsTrader:

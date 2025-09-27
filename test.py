@@ -1,13 +1,13 @@
-# YFINANCE
-#from y_finance.stock import FinanceStock
-#stock = FinanceStock("RHM.DE")
-#print(stock.live_price)
+import multiprocessing as mp
 
-# GRAPH
-from lightweight_charts import Chart
 from y_finance.stock import FinanceStock
-chart = Chart()
-stock = FinanceStock("RHM.DE")
-df = stock.get_historical_data()
-chart.set(df)
-chart.show(block=True)
+from y_finance.graph import  LightweightGraph
+
+def local_graph(stock):
+    graph = LightweightGraph(stock)
+    graph.show(block=True)    # or False + input("Press Enter to exit...")
+
+if __name__ == "__main__":
+    stock = FinanceStock("RHM.DE")
+    mp.freeze_support()
+    local_graph(stock)

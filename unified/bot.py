@@ -4,10 +4,10 @@ from typing import Optional, Literal
 import pandas as pd
 import math
 
-from y_finance.stock import FinanceStock
-from tws.stock import TwsStock
-from tws.trader import TwsTrader
-from tws.connection import TwsConnection
+from yfinance_wrapper.stock import FinanceStock
+from tws_wrapper.stock import TwsStock
+from tws_wrapper.trader import TwsTrader
+from tws_wrapper.connection import TwsConnection
 
 from unified.strategy.base import BaseStrategy, StrategySignal
 
