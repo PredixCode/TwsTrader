@@ -10,7 +10,7 @@ class FetchQueue:
     """
     Manages and optimizes data fetching with persistent, on-disk caching.
     """
-    def __init__(self, cache_file="market/util/fetch_cache.pkl"):
+    def __init__(self, cache_file="y_finance/util/fetch_cache.pkl"):
         """
         Initializes the queue and loads the cache from disk if it exists.
         """
@@ -25,9 +25,9 @@ class FetchQueue:
             try:
                 with open(self.cache_file, 'rb') as f:
                     self._cache = pickle.load(f)
-                print(f"✅ Success! Loaded {len(self._cache)} items from the cache.")
+                print(f"✅ Success! Loaded {len(self._cache)} items from yfinance cache.")
             except Exception as e:
-                print(f"❌ Warning: Could not load cache file. It might be corrupted. Starting fresh. Error: {e}")
+                print(f"❌ Warning: Could not load yfinance cache file. It might be corrupted. Starting without cache. Error: {e}")
                 self._cache = {}
         else:
             print("No cache file found. A new one will be created.")

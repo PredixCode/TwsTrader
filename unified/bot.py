@@ -2,20 +2,23 @@
 from dataclasses import dataclass
 from typing import Optional, Literal
 import pandas as pd
+import math
 
 from y_finance.stock import FinanceStock
 from tws.stock import TwsStock
 from tws.trader import TwsTrader
 from tws.connection import TwsConnection
 
+from unified.strategy.base import BaseStrategy, StrategySignal
+
 
 @dataclass
 class SymbolMapping:
-    yf_symbol: str           # e.g. "RHM.DE"
-    ib_symbol: str           # e.g. "RHM"
-    exchange: str = "SMART"  # IB exchange router
-    currency: str = "USD"    # "EUR" for European listings, etc.
-    primaryExchange: Optional[str] = None  # e.g. "IBIS", "NASDAQ"
+    yf_symbol: str           # e.g., "RHM.DE"
+    ib_symbol: str           # e.g., "RHM"
+    exchange: str = "SMART"
+    currency: str = "USD"
+    primaryExchange: Optional[str] = None  # e.g., "IBIS", "NASDAQ"
 
 
 @dataclass
@@ -23,21 +26,35 @@ class BotConfig:
     mapping: SymbolMapping
     quantity: int = 1
     use_limit_orders: bool = False
-    limit_offset: float = 0.0           # absolute offset for limits (e.g., 0.2 EUR/USD)
+    limit_offset: float = 0.0
     tif: str = "DAY"
     outsideRTH: bool = False
-    history_period: str = "7d"          # yfinance period
-    history_interval: str = "1m"        # yfinance interval
-    market_data_type: Optional[int] = None  # IB Market Data Type (None = auto discover)
+    # History fetched once:
+    history_period: str = "7d"
+    history_interval: str = "1m"  # keep 1m to match the strategy calc
+    market_data_type: Optional[int] = None
     account: Optional[str] = None
     wait_for_fills: bool = False
-    max_position: int = 100             # simple risk cap
+    max_position: int = 100
+    # Session cache control
+    session_window: Optional[int] = None  # keep only last N rows if set (e.g., 10_000)
+    price_epsilon: float = 0.0            # minimal change to treat as "new price"
+    evaluate_on_close: bool = True        # run strategy only on bar close (default)
+    tp_exit_all: bool = True              # on TP, close full position instead of 'quantity'
 
 
 class UnifiedTradingBot:
-    def __init__(self, conn: TwsConnection, config: BotConfig):
+    """
+    Unified bot with pluggable strategy:
+    - Fetches yfinance 1m history once (OHLC).
+    - Appends minute OHLC bars built from IB snapshot() prices.
+    - Polls once per second, acting only when price changes.
+    - Runs the strategy on bar close (or intrabar if evaluate_on_close=False).
+    """
+    def __init__(self, conn: TwsConnection, config: BotConfig, strategy: BaseStrategy):
         self.conn = conn
         self.cfg = config
+        self.strategy = strategy
 
         # Yahoo Finance side
         self.finance = FinanceStock(config.mapping.yf_symbol)
@@ -53,34 +70,162 @@ class UnifiedTradingBot:
         )
         self.trader = TwsTrader(self.stock)
 
-    # --- Data ---
-    def fetch_history(self) -> pd.DataFrame:
-        """
-        Fetch historical data from yfinance using your FinanceStock wrapper.
-        """
+        # Session state
+        self.session_df: Optional[pd.DataFrame] = None  # OHLCV (at least OHLC)
+        self._history_initialized: bool = False
+        self._last_price: Optional[float] = None
+
+        # 1-minute bar builder state
+        self._cur_minute: Optional[pd.Timestamp] = None
+        self._cur_open: Optional[float] = None
+        self._cur_high: Optional[float] = None
+        self._cur_low: Optional[float] = None
+        self._cur_close: Optional[float] = None
+
+    # ---------- Initialization ----------
+    def ensure_initialized(self) -> None:
+        self.stock.get_ticker()  # ensures contract + market data type
+        if not self._history_initialized:
+            self._init_history()
+            # Let strategy learn initial state
+            self.strategy.warmup(self.session_df)
+
+    def _init_history(self) -> None:
         df = self.finance.get_historical_data(
             period=self.cfg.history_period,
             interval=self.cfg.history_interval
         )
-        return df
-
-    def compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Compute simple indicators (SMA crossover) on historical data.
-        """
         if df is None or df.empty:
-            return df
-        out = df.copy()
-        price_col = "Close" if "Close" in out.columns else "close"
-        out["sma_fast"] = out[price_col].rolling(20, min_periods=5).mean()
-        out["sma_slow"] = out[price_col].rolling(50, min_periods=10).mean()
-        return out
+            self.session_df = pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+        else:
+            # Normalize column names to expected OHLC
+            cols = {c.lower(): c for c in df.columns}
+            need = ["open", "high", "low", "close"]
+            if not all(c in cols for c in need):
+                # Try to rename if mixed case
+                rename = {df.columns[df.columns.str.lower() == "open"][0]: "Open"} if "open" in cols else {}
+                rename |= {df.columns[df.columns.str.lower() == "high"][0]: "High"} if "high" in cols else {}
+                rename |= {df.columns[df.columns.str.lower() == "low"][0]: "Low"} if "low" in cols else {}
+                rename |= {df.columns[df.columns.str.lower() == "close"][0]: "Close"} if "close" in cols else {}
+                df = df.rename(columns=rename)
+            else:
+                df = df.rename(columns={
+                    df.columns[df.columns.str.lower() == "open"][0]: "Open",
+                    df.columns[df.columns.str.lower() == "high"][0]: "High",
+                    df.columns[df.columns.str.lower() == "low"][0]: "Low",
+                    df.columns[df.columns.str.lower() == "close"][0]: "Close",
+                })
+            self.session_df = df[["Open", "High", "Low", "Close"]].copy()
 
-    # --- Position ---
+        self._history_initialized = True
+
+        # Initialize live bar seed
+        if self.session_df is not None and not self.session_df.empty:
+            last_close = float(self.session_df["Close"].iloc[-1])
+            self._last_price = last_close
+            last_idx = self.session_df.index[-1]
+            self._cur_minute = pd.Timestamp(last_idx).tz_localize(None) if last_idx.tz is None else last_idx.tz_convert(None)
+        else:
+            self._cur_minute = None
+
+    # ---------- Snapshot to 1m bars ----------
+    def _safe_price(self, x) -> Optional[float]:
+        if x is None:
+            return None
+        if isinstance(x, float) and math.isnan(x):
+            return None
+        return float(x)
+
+    def _snapshot_price(self) -> Optional[float]:
+        snap = self.stock.snapshot()
+        price = self._safe_price(snap.get("mid"))
+        if price is None:
+            price = self._safe_price(snap.get("last"))
+        if price is None:
+            bid = self._safe_price(snap.get("bid"))
+            ask = self._safe_price(snap.get("ask"))
+            if bid is not None and ask is not None:
+                price = (bid + ask) / 2.0
+            elif bid is not None:
+                price = bid
+            elif ask is not None:
+                price = ask
+        return price
+
+    def update_with_snapshot(self, wait_until_change: bool = False) -> bool:
+        ib = self.conn.connect()
+        eps = float(self.cfg.price_epsilon or 0.0)
+
+        def changed(new_p: Optional[float], last_p: Optional[float]) -> bool:
+            if new_p is None:
+                return False
+            if last_p is None:
+                return True
+            return abs(new_p - last_p) > eps
+
+        while True:
+            p = self._snapshot_price()
+            if changed(p, self._last_price):
+                self._last_price = p
+                self._update_ohlc_with_price(p)
+                return True
+            if not wait_until_change:
+                return False
+            ib.sleep(1.0)
+
+    
+
+    def _update_ohlc_with_price(self, price: float) -> bool:
+        """
+        Update current minute bar with new price; start a new bar when minute changes.
+        Returns True if a bar was closed (i.e., a new minute started).
+        """
+        tz = getattr(self.session_df.index, "tz", None) if self.session_df is not None else None
+        now = pd.Timestamp.now(tz=tz).floor("T")  # minute key
+        bar_closed = False
+
+        if self._cur_minute is None:
+            # Start bar
+            self._start_new_bar(now, price)
+            return False
+
+        if now == self._cur_minute:
+            # Update current bar
+            self._cur_high = max(self._cur_high, price) if self._cur_high is not None else price
+            self._cur_low = min(self._cur_low, price) if self._cur_low is not None else price
+            self._cur_close = price
+            # Reflect into session_df row
+            self._upsert_row(now, self._cur_open, self._cur_high, self._cur_low, self._cur_close)
+        else:
+            # Previous minute is closed; ensure it is in session_df with final values
+            self._upsert_row(self._cur_minute, self._cur_open, self._cur_high, self._cur_low, self._cur_close)
+            bar_closed = True
+            # Start new bar with current price
+            self._start_new_bar(now, price)
+
+        # Optional rolling window
+        if self.cfg.session_window and self.session_df is not None and len(self.session_df) > self.cfg.session_window:
+            self.session_df = self.session_df.iloc[-self.cfg.session_window :].copy()
+
+        return bar_closed
+
+    def _start_new_bar(self, minute_key: pd.Timestamp, price: float) -> None:
+        self._cur_minute = minute_key
+        self._cur_open = price
+        self._cur_high = price
+        self._cur_low = price
+        self._cur_close = price
+        self._upsert_row(minute_key, price, price, price, price)
+
+    def _upsert_row(self, idx: pd.Timestamp, o: float, h: float, l: float, c: float) -> None:
+        if self.session_df is None:
+            self.session_df = pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+        # Insert or update the row at index idx
+        self.session_df.loc[idx, ["Open", "High", "Low", "Close"]] = [o, h, l, c]
+        self.session_df.sort_index(inplace=True)
+
+    # ---------- Trading helpers ----------
     def get_position(self) -> int:
-        """
-        Get current IB position for this contract (shares).
-        """
         ib = self.conn.connect()
         pos = 0
         for p in ib.positions():
@@ -89,102 +234,107 @@ class UnifiedTradingBot:
                 break
         return pos
 
-    # --- Strategy ---
-    def decide(self, df: pd.DataFrame) -> Literal["BUY", "SELL", "HOLD"]:
-        """
-        Very simple SMA crossover decision:
-        - BUY if fast > slow
-        - SELL if fast < slow
-        - HOLD otherwise
-        """
-        if df is None or df.empty:
-            return "HOLD"
-        last = df.iloc[-1]
-        if pd.isna(last.get("sma_fast")) or pd.isna(last.get("sma_slow")):
-            return "HOLD"
-        if last["sma_fast"] > last["sma_slow"]:
-            return "BUY"
-        elif last["sma_fast"] < last["sma_slow"]:
-            return "SELL"
-        return "HOLD"
-
-    # --- Trading ---
-    def place_trade(self, side: Literal["BUY", "SELL"]) -> None:
-        qty = self.cfg.quantity
+    def place_trade(self, side: Literal["BUY", "SELL"], qty: int, reason: str = "") -> None:
         if qty <= 0:
-            print("Quantity <= 0. Skipping.")
             return
-
         if self.cfg.use_limit_orders:
-            # Use latest bid/ask/last to place a limit slightly favorable by limit_offset
             t = self.stock.get_ticker()
             ref = (t.bid if side == "BUY" else t.ask)
             if ref is None:
                 ref = t.last or 0
-            px = ref + self.cfg.limit_offset if side == "BUY" else ref - self.cfg.limit_offset
-            px = float(px)
-            if side == "BUY":
-                trade = self.trader.buy(
-                    qty, order_type="LMT", limit_price=px,
-                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                    account=self.cfg.account, wait=self.cfg.wait_for_fills
-                )
-            else:
-                trade = self.trader.sell(
-                    qty, order_type="LMT", limit_price=px,
-                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                    account=self.cfg.account, wait=self.cfg.wait_for_fills
-                )
+            px = float(ref + self.cfg.limit_offset) if side == "BUY" else float(ref - self.cfg.limit_offset)
+            trade = (
+                self.trader.buy(qty, order_type="LMT", limit_price=px,
+                                tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                                account=self.cfg.account, wait=self.cfg.wait_for_fills)
+                if side == "BUY" else
+                self.trader.sell(qty, order_type="LMT", limit_price=px,
+                                 tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                                 account=self.cfg.account, wait=self.cfg.wait_for_fills)
+            )
         else:
-            if side == "BUY":
-                trade = self.trader.buy(
-                    qty, order_type="MKT",
-                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                    account=self.cfg.account, wait=self.cfg.wait_for_fills
-                )
-            else:
-                trade = self.trader.sell(
-                    qty, order_type="MKT",
-                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                    account=self.cfg.account, wait=self.cfg.wait_for_fills
-                )
-        print(f"Placed {side} order:", TwsTrader.trade_summary(trade))
+            trade = (
+                self.trader.buy(qty, order_type="MKT",
+                                tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                                account=self.cfg.account, wait=self.cfg.wait_for_fills)
+                if side == "BUY" else
+                self.trader.sell(qty, order_type="MKT",
+                                 tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                                 account=self.cfg.account, wait=self.cfg.wait_for_fills)
+            )
+        print(f"Placed {side} x{qty} ({reason}):", TwsTrader.trade_summary(trade))
 
-    # --- Orchestration ---
-    def run_once(self) -> None:
+    # ---------- Orchestration ----------
+    def run_loop(self):
         """
-        One full cycle: ensure market data, fetch history, compute indicators,
-        decide, risk-check, then place a trade if needed.
+        Poll every second; only act when the price changes.
+        Strategy is evaluated at each bar close (default) to match TradingView behavior.
         """
-        # Ensure IB contract is qualified and market data type discovered
-        self.stock.get_ticker()
-
-        hist = self.fetch_history()
-        hist = self.compute_indicators(hist)
-        decision = self.decide(hist)
-        pos = self.get_position()
-        print(f"Decision: {decision} | Current position: {pos}")
-
-        # Simple absolute position cap
-        if decision == "BUY" and pos + self.cfg.quantity > self.cfg.max_position:
-            print("Risk cap reached. Skipping BUY.")
-            return
-        if decision == "SELL" and -pos + self.cfg.quantity > self.cfg.max_position:
-            print("Risk cap reached. Skipping SELL.")
-            return
-
-        if decision in ("BUY", "SELL"):
-            self.place_trade(decision)
-
-    def run_loop(self, poll_seconds: int = 1):
-        """
-        Keep polling every poll_seconds seconds.
-        """
+        self.ensure_initialized()
         ib = self.conn.connect()
-        print("Starting unified bot loop. Ctrl+C to stop.")
+        print("Starting bot loop (1s polling; acting on price changes, strategy on bar close). Ctrl+C to stop.")
+
         try:
             while True:
-                self.run_once()
-                ib.sleep(poll_seconds)
+                changed = self.update_with_snapshot(wait_until_change=True)
+                if not changed:
+                    ib.sleep(1.0)
+                    continue
+
+                # Evaluate only on bar close (or on every tick if evaluate_on_close=False)
+                bar_closed = True  # update_with_snapshot already updated; find if minute changed:
+                # Determine if the last update started a NEW minute (previous bar closed)
+                # We can check if there are duplicate minute rows; simpler: when _cur_close == _cur_open after update, a new bar started.
+                # But we stored the "bar_closed" in _update_ohlc_with_price; to keep it simple, re-run strategy only when the minute changed.
+                # For accuracy, we’ll re-check: if the most recent index equals _cur_minute, do nothing. The previous call already handled reinsert.
+                # => We'll run on bar close when the previous minute finished i.e., whenever _cur_close == _cur_open and session_df has the new minute plus the previous one.
+                # To keep this concise, respect config flag:
+                if self.cfg.evaluate_on_close:
+                    # Run only when a NEW row was added in the last tick (minute boundary).
+                    # We check whether last minute has at least two rows and the last row's time != the previous row's time.
+                    if self.session_df is None or len(self.session_df) < 2:
+                        continue
+                    # If last two indices are different minutes, bar_closed just happened.
+                    last_idx = self.session_df.index[-1]
+                    prev_idx = self.session_df.index[-2]
+                    bar_closed = (last_idx != prev_idx)  # always True, but guards stale states
+                    if not bar_closed:
+                        continue
+
+                # Get signal and act
+                signal: StrategySignal = self.strategy.on_bar(self.session_df)
+                if signal.action == "HOLD":
+                    continue
+
+                pos = self.get_position()
+                qty = self.cfg.quantity
+
+                if signal.is_take_profit and self.cfg.tp_exit_all:
+                    qty = abs(pos) if abs(pos) > 0 else qty  # close full position if any
+
+                # Skip redundant entries
+                if signal.action == "BUY" and pos > 0 and not signal.is_take_profit:
+                    continue
+                if signal.action == "SELL" and pos < 0 and not signal.is_take_profit:
+                    continue
+
+                # Basic risk cap
+                if signal.action == "BUY" and pos + qty > self.cfg.max_position:
+                    print("Risk cap reached. Skipping BUY.")
+                    continue
+                if signal.action == "SELL" and -pos + qty > self.cfg.max_position:
+                    print("Risk cap reached. Skipping SELL.")
+                    continue
+
+                # If TP but flat, ignore
+                if signal.is_take_profit and pos == 0:
+                    continue
+
+                # On TP, trade opposite the existing position size (if tp_exit_all=True)
+                if signal.is_take_profit and self.cfg.tp_exit_all and abs(pos) > 0:
+                    qty = abs(pos)
+
+                self.place_trade(signal.action, qty, reason=signal.reason)
+
         except KeyboardInterrupt:
             print("Stopped by user.")
