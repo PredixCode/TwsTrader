@@ -49,6 +49,6 @@ if __name__ == "__main__":
     stock = FinanceStock("RHM.DE")
 
     #tws_stock_stream()
-    tws_trade()
+    #tws_trade()
     #web_graph(stock)
-    #local_graph(stock)
+    local_graph(stock)
