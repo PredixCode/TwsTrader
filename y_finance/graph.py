@@ -89,7 +89,7 @@ class FinanceGraph:
         print(f"✅ Success! Interactive chart saved to: {os.path.abspath(output_path)}")
 
 if __name__ == "__main__":
-    from yfinance.stock import FinanceStock
+    from stock import FinanceStock
 
     # --- 1. Setup ---
     stock = FinanceStock("RHM.DE")

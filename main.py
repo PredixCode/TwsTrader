@@ -1,31 +1,38 @@
-from datetime import datetime
 from ib_insync import util
 util.logToConsole()
 
-from y_finance.stock  import FinanceStock
 from tws.connection import TwsConnection
-from tws.stock import TwsStock, MarketType
-from tws.trader import TwsTrader
-
+from unified.bot import UnifiedTradingBot, BotConfig, SymbolMapping
 
 if __name__ == "__main__":
-    y_finance_stock = FinanceStock("RHM.DE")
-    print(y_finance_stock.live_price)
+    # Map Yahoo symbol to IB contract details
+    mapping = SymbolMapping(
+        yf_symbol="RHM.DE",
+        ib_symbol="RHM",
+        exchange="SMART",
+        currency="EUR",
+        primaryExchange="IBIS"
+    )
 
-    with TwsConnection(port=7497, client_id=2) as conn:
-        tws_stok = TwsStock(conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
-        #stk = TwsStock(conn, symbol="AAPL", exchange="SMART", currency="USD", primaryExchange="NASDAQ")
-        ib = conn.connect()
-        contract = tws_stok.qualify()
+    cfg = BotConfig(
+        mapping=mapping,
+        quantity=10,
+        use_limit_orders=True,
+        limit_offset=0.2,       # e.g., 0.2 EUR above bid for BUY / below ask for SELL
+        tif="DAY",
+        outsideRTH=False,
+        history_period="7d",
+        history_interval="1m",
+        market_data_type=None,   # None => auto-discover via your TwsStock logic
+        wait_for_fills=False,
+        max_position=10
+    )
 
-        # Make sure we know which market data type we ended up with
-        # This will subscribe and set stk.market_data_type internally if needed
-        ticker = tws_stok.get_ticker()
-        md_type = tws_stok.market_data_type
+    with TwsConnection(host="127.0.0.1", port=7497, client_id=2, timeout=5) as conn:
+        bot = UnifiedTradingBot(conn, cfg)
 
-        # Keep the event loop alive
-        try:
-            while True:
-                ib.sleep(1.0)
-        except KeyboardInterrupt:
-            print("Stopping...")
+        # Single cycle
+        bot.run_once()
+
+        # Or run continuously
+        # bot.run_loop(poll_seconds=1)

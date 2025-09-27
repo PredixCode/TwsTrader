@@ -1,6 +1,6 @@
 import pandas as pd
 
-class Trader:
+class TradeSimulation:
     """
     A trading simulation environment for backtesting strategies.
     """
