@@ -91,7 +91,7 @@ class FinanceGraph:
 if __name__ == "__main__":
     from stock import FinanceStock
 
-    '''# --- 1. Setup ---
+    # --- 1. Setup ---
     stock = FinanceStock("RHM.DE")
     # --- 2. Data Preparation ---
     data = stock.get_all_historical_data()
@@ -101,13 +101,6 @@ if __name__ == "__main__":
     path_to_csv = stock.last_fetch_to_csv()
     # --- 4. Visualize the Data ---
     visualizer = FinanceGraph(csv_file_path=path_to_csv)
-    visualizer.plot_candlestick()'''
-
-    from lightweight_charts import Chart
-    chart = Chart()
-    stock = FinanceStock("RHM.DE")
-    df = stock.get_all_historical_data()
-    chart.set(df)
-    chart.show(block=True)
+    visualizer.plot_candlestick()
     
 
