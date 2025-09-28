@@ -103,7 +103,7 @@ class FinanceStock:
         self.last_fetch = all_history.copy()
         return all_history
 
-    def last_fetch_to_csv(self, last_fetch: pd.Dataframe=None):
+    def last_fetch_to_csv(self, last_fetch: pd.DataFrame=None):
         """
         Saves the last fetched pandas DataFrame to a CSV file.
         Works after calling either get_historical_data() or get_historical_data_by_range().
