@@ -31,7 +31,7 @@ def tws_trade():
         print("SELL placed (not waiting):", trader.trade_summary(trade2))
 
 def web_graph(stock: FinanceStock):
-    data = stock.get_all_historical_data()
+    data = stock.get_max_historical_data()
     if data.empty:
         raise SystemExit("Cannot create visualization, no data was fetched.")
     # --- 3. Save Data to CSV ---
@@ -52,5 +52,5 @@ if __name__ == "__main__":
 
     #tws_stock_stream()
     #tws_trade()
-    web_graph(stock)
-    #local_graph(stock)
+    #web_graph(stock)
+    local_graph(stock)

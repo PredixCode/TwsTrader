@@ -11,7 +11,7 @@ class FetchQueue:
     Persistent on-disk caching with TTL, incremental updates, and minimal tail probes.
     """
 
-    def __init__(self, cache_file="fetch_cache.pkl", max_age_seconds: int = 60):
+    def __init__(self, cache_file="data/fetch_cache.pkl", max_age_seconds: int = 60):
         file_dir = os.path.dirname(os.path.realpath(__file__))
         self.cache_file = os.path.join(file_dir, cache_file)
         self.max_age_seconds = max_age_seconds

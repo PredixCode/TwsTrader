@@ -4,9 +4,9 @@ import pandas as pd
 from datetime import datetime
 
 try:
-    from yfinance_wrapper.util.fetch_queue import FetchQueue
+    from yfinance_wrapper.fetch_queue import FetchQueue
 except:
-    from yfinance_wrapper.util.fetch_queue import FetchQueue
+    from yfinance_wrapper.fetch_queue import FetchQueue
 
 
 class FinanceStock:
@@ -59,41 +59,20 @@ class FinanceStock:
         except Exception as e:
             print(f"An error occurred while fetching historical data: {e}")
             return pd.DataFrame()
-
-    def get_historical_data_in_range(self, start_date: str = "2024-01-01",
-                                     end_date: str = None, interval: str = "1d", queue: FetchQueue = None):
-        if end_date is None:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        print(f"Fetching data for {self.ticker_symbol} from {start_date} to {end_date} at {interval} interval...")
-        try:
-            if queue is None:
-                queue = self.queue
-            history = queue.fetch(self.ticker, self.ticker_symbol,
-                                  start=start_date, end=end_date, interval=interval)
-            if history.empty:
-                print("Warning: No data returned for the specified date range/interval.")
-            self.last_fetch = history.copy()
-            return history
-        except Exception as e:
-            print(f"An error occurred while fetching data by range: {e}")
-            return pd.DataFrame()
         
-    def get_all_historical_data(self, queue: FetchQueue = None) -> pd.DataFrame:
+    def get_max_historical_data(self, intervals: list[str]=["1m", "2m", "5m", "1h", "1d", "1mo"], queue: FetchQueue = None) -> pd.DataFrame:
         print(f"\n--- Starting comprehensive data fetch for {self.name} ---")
         if queue is None:
             queue = self.queue
 
-        intervals = ["1m", "2m", "5m", "1h", "1d", "1mo"]
         period = "max"
-
         now_ts = self._now_utc_naive()
 
         # 1) Always probe the latest 1m tail and only append if changed
         #    - Snapshot cached 1m before
         cached_1m_before = queue.get_cached(self.ticker_symbol, period=period, interval="1m")
         df_1m_after = queue.fetch(self.ticker, self.ticker_symbol,
-                                  period=period, interval="1m",
-                                  force_tail="2m")  # tiny network probe + merge
+                                  period=period, interval="1m")  # tiny network probe + merge
 
         changed_1m = False
         if cached_1m_before is None or cached_1m_before.empty:

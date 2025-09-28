@@ -1,20 +1,9 @@
-import os
-import time
 import argparse
-import numpy as np
-import pandas as pd
-import joblib
-
-import tensorflow as tf
-from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
-
 
 from ai.utils import gpu_check
-from ai.train import run_price_training
-from ai.eval import evaluate_price_model
-from ai.predict import predict_next_price
-from yfinance_wrapper.stock import FinanceStock
+from ai.pipelines.train import run_price_training
+from ai.pipelines.eval import evaluate_price_model
+from ai.pipelines.predict import predict_next_price
 
 
 
