@@ -4,14 +4,16 @@ from typing import Optional, List
 import yfinance as yf
 import pandas as pd
 
+
 from yfinance_wrapper.fetch_cache import FetchCache
 
 
+
 class FinanceStock:
-    def __init__(self, ticker_symbol: str, queue: Optional[FetchCache] = None):
+    def __init__(self, ticker_symbol: str, cache: Optional[FetchCache] = None):
         self.ticker_symbol = ticker_symbol
         self.ticker = yf.Ticker(self.ticker_symbol)
-        self.queue = queue or FetchCache()
+        self.cache = cache or FetchCache()
         self.last_fetch: Optional[pd.DataFrame] = None
 
     @property
@@ -37,7 +39,7 @@ class FinanceStock:
         period: str = "7d",
         interval: str = "1m",
     ) -> pd.DataFrame:
-        df = self.queue.fetch(self.ticker, self.ticker_symbol, period=period, interval=interval)
+        df = self.cache.fetch(self.ticker, self.ticker_symbol, period=period, interval=interval)
         self.last_fetch = df.copy()
         return df
 

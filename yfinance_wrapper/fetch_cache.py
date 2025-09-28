@@ -1,6 +1,7 @@
 import os
 import time
 import pickle
+from time import sleep
 from typing import Dict, Tuple
 
 import pandas as pd
@@ -142,13 +143,13 @@ class FetchCache:
         """
         cached_df = self._normalize_dataframe(cached_df)
         if cached_df.empty:
-            fresh = self._normalize_dataframe(ticker.history(**original_params))
+            fresh = self._normalize_dataframe(self.__safe_fetch(ticker, **original_params))
             return fresh
 
         interval = original_params.get("interval", "1d")
         last_ts = pd.Timestamp(cached_df.index.max())
         if pd.isna(last_ts):
-            fresh = self._normalize_dataframe(ticker.history(**original_params))
+            fresh = self._normalize_dataframe(self.__safe_fetch(ticker, **original_params))
             return fresh
 
         last_ts_utc = self._to_naive_utc(last_ts)
@@ -163,7 +164,7 @@ class FetchCache:
         update_params["start"] = start_ts
         update_params["end"] = now_ts
 
-        df_new = self._normalize_dataframe(ticker.history(**update_params))
+        df_new = self._normalize_dataframe(self.__safe_fetch(ticker, **update_params))
         if df_new.empty:
             return cached_df
 
@@ -189,7 +190,7 @@ class FetchCache:
                 self._save_cache()
                 return updated.copy()
             else:
-                fresh = self._normalize_dataframe(ticker.history(**params))
+                fresh = self._normalize_dataframe(self.__safe_fetch(ticker, **params))
                 print(f"[FetchCache] No cache for {ticker_symbol} {params} -> ({len(fresh)} rows)")
                 self._cache[cache_key] = {"data": fresh, "fetched_at": time.time()}
                 self._save_cache()
@@ -208,8 +209,12 @@ class FetchCache:
             self._save_cache()
             return updated.copy()
 
-        fresh = self._normalize_dataframe(ticker.history(**params))
+        fresh = self._normalize_dataframe(self.__safe_fetch(ticker, **params))
         print(f"[FetchCache] No cache for {ticker_symbol} {params} -> network fetch ({len(fresh)} rows)")
         self._cache[cache_key] = {"data": fresh, "fetched_at": time.time()}
         self._save_cache()
         return fresh.copy()
+    
+    def __safe_fetch(self, ticker, **params):
+        sleep(1)
+        return ticker.history(**params)

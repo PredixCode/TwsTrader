@@ -6,7 +6,7 @@ from  tws_wrapper.trader import TwsTrader
 from tws_wrapper.stock import TwsStock, TwsConnection
 
 from yfinance_wrapper.stock import FinanceStock
-from yfinance_wrapper.graph import  WebGraph, LightweightGraph
+from ui.graph import LiveGraph
 
 
 # USAGE examples of wrappers and graphs
@@ -30,21 +30,18 @@ def tws_trade():
         trade2 = trader.sell(10, order_type='LMT', limit_price=limit_px, wait=False)
         print("SELL placed (not waiting):", trader.trade_summary(trade2))
 
-def web_graph(stock: FinanceStock):
-    data = stock.get_max_historical_data()
-    if data.empty:
-        raise SystemExit("Cannot create visualization, no data was fetched.")
-    # --- 3. Save Data to CSV ---
-    path_to_csv = stock.last_fetch_to_csv()
-    # --- 4. Visualize the Data ---
-    visualizer = WebGraph(csv_file_path=path_to_csv)
-    visualizer.plot_candlestick()
-
-def local_graph(stock: FinanceStock):
+def live_graph(stock: FinanceStock):
     mp.freeze_support()
-    graph = LightweightGraph(stock)
-    graph.show(block=True)
+    graph = LiveGraph(stock)
+    graph.start_auto_update()
+    graph.add_random_trade_labels(count=500)
 
+    t = graph.dataframe.index[-5]
+    p = float(graph.dataframe.loc[t]['Close'])
+    graph.add_trade_label(t, 'buy', price=p, text='BUY @ {:.2f}'.format(p), use_marker=False)
+
+    graph.show(block=True)
+    graph.stop_auto_update()
 
 if __name__ == "__main__":
     stock = FinanceStock("BTC-EUR")
@@ -52,5 +49,4 @@ if __name__ == "__main__":
 
     #tws_stock_stream()
     #tws_trade()
-    #web_graph(stock)
-    local_graph(stock)
+    live_graph(stock)
