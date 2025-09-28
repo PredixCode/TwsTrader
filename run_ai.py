@@ -144,6 +144,21 @@ def infer_next_timestamp(df: pd.DataFrame):
     next_ts = idx[-1] + step_delta
     return next_ts, step_delta
 
+def model_shapes_compatible(model, seq_len, num_features, num_targets) -> bool:
+    try:
+        in_shape = model.input_shape  # (None, seq_len, num_features)
+        out_shape = model.output_shape # (None, num_targets)
+        return (in_shape[-2] == seq_len) and (in_shape[-1] == num_features) and (out_shape[-1] == num_targets)
+    except Exception:
+        return False
+
+def scalers_compatible(X_scaler, Y_scaler, num_features, num_targets) -> bool:
+    try:
+        return (getattr(X_scaler, "n_features_in_", None) == num_features and
+                getattr(Y_scaler, "n_features_in_", None) == num_targets)
+    except Exception:
+        return False
+
 
 # ============== Pipelines ==============
 
@@ -169,22 +184,66 @@ def run_price_training(config):
     print(f"Dataset: X={X.shape}, y={y.shape}")
 
     X_train, X_test, y_train, y_test = time_series_train_test_split(X, y, test_ratio=config['TEST_RATIO'])
-    X_train_s, X_test_s, y_train_s, y_test_s, X_scaler, Y_scaler = scale_train_test(X_train, X_test, y_train, y_test)
 
-    # Build and compile the shared model
-    model_wrapper = PricePredictorLSTM(seq_len, num_features=X.shape[2], num_targets=len(target_cols))
-    model_wrapper.model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=config['LR'], clipnorm=1.0),
-        loss='huber',
-        metrics=['mae']
-    )
+    # Determine whether to continue training
+    can_try_continue = (not config.get("FRESH", False)
+                        and os.path.exists(config['PRICE_MODEL_PATH'])
+                        and os.path.exists(config['PRICE_SCALER_X_PATH'])
+                        and os.path.exists(config['PRICE_SCALER_Y_PATH']))
+
+    model = None
+    continue_mode = False
+
+    if can_try_continue:
+        print("Found existing artifacts. Attempting to continue training...")
+        try:
+            loaded_model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # tf.keras.Model
+            X_scaler_loaded = joblib.load(config['PRICE_SCALER_X_PATH'])
+            Y_scaler_loaded = joblib.load(config['PRICE_SCALER_Y_PATH'])
+            if (loaded_model is not None
+                and model_shapes_compatible(loaded_model, seq_len, X.shape[2], len(target_cols))
+                and scalers_compatible(X_scaler_loaded, Y_scaler_loaded, X.shape[2], len(target_cols))):
+                model = loaded_model
+                X_scaler = X_scaler_loaded
+                Y_scaler = Y_scaler_loaded
+                continue_mode = True
+                print("✅ Continuing training from saved model and scalers.")
+            else:
+                print("⚠️ Saved model/scalers are not compatible with current config. Training fresh.")
+        except Exception as e:
+            print(f"⚠️ Could not load previous model/scalers ({e}). Training fresh.")
+
+    num_features = X_train.shape[2]
+    if continue_mode:
+        # Always keep scalers fixed when continuing
+        X_train_s = X_scaler.transform(X_train.reshape(-1, num_features)).reshape(X_train.shape)
+        X_test_s  = X_scaler.transform(X_test.reshape(-1, num_features)).reshape(X_test.shape)
+        y_train_s = Y_scaler.transform(y_train)
+        y_test_s  = Y_scaler.transform(y_test)
+    else:
+        # Fresh: fit new scalers on current train split
+        X_scaler = MinMaxScaler()
+        Y_scaler = MinMaxScaler()
+        X_train_s = X_scaler.fit_transform(X_train.reshape(-1, num_features)).reshape(X_train.shape)
+        X_test_s  = X_scaler.transform(X_test.reshape(-1, num_features)).reshape(X_test.shape)
+        y_train_s = Y_scaler.fit_transform(y_train)
+        y_test_s  = Y_scaler.transform(y_test)
+
+        # Build a fresh model wrapper that matches dims
+        model_wrapper = PricePredictorLSTM(seq_len, num_features=X.shape[2], num_targets=len(target_cols))
+        model = model_wrapper.model  # tf.keras.Model
+
+    # Compile with appropriate LR
+    lr = config['LR_CONTINUE'] if continue_mode else config['LR']
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0),
+                  loss='huber', metrics=['mae'])
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(patience=8, min_delta=5e-7, restore_best_weights=True, monitor='val_loss'),
         tf.keras.callbacks.ReduceLROnPlateau(patience=4, factor=0.5, min_lr=1e-5, monitor='val_loss')
     ]
 
-    model_wrapper.model.fit(
+    model.fit(
         X_train_s, y_train_s,
         validation_data=(X_test_s, y_test_s),
         epochs=config['PRICE_EPOCHS'],
@@ -193,8 +252,9 @@ def run_price_training(config):
         verbose=1
     )
 
+    # Save artifacts
     os.makedirs(os.path.dirname(config['PRICE_MODEL_PATH']), exist_ok=True)
-    model_wrapper.save(config['PRICE_MODEL_PATH'])
+    model.save(config['PRICE_MODEL_PATH'])
     joblib.dump(X_scaler, config['PRICE_SCALER_X_PATH'])
     joblib.dump(Y_scaler, config['PRICE_SCALER_Y_PATH'])
     print(f"Saved model to {config['PRICE_MODEL_PATH']}")
@@ -314,19 +374,20 @@ def build_config(args):
         "STRIDE": 1,
         "TEST_RATIO": 0.2,
 
-        # Keep Volume in features; drop it from targets
-        "PRICE_FEATURES": ["Open", "High", "Low", "Close", "Volume"],
-        "PRICE_TARGETS": ["Open", "High", "Low", "Close"],
+        "PRICE_FEATURES": ["Open", "High", "Low", "Close", "Volume"],  # Volume remains a feature
+        "PRICE_TARGETS": ["Open", "High", "Low", "Close"],             # predict O/H/L/C only
 
         "PRICE_SEQUENCE_LENGTH": 90,
         "PRICE_EPOCHS": 50,
         "PRICE_BATCH_SIZE": 256,
         "LR": 3e-4,
+        "LR_CONTINUE": 1e-4,  # smaller LR when continuing
 
         "PRICE_MODEL_PATH": "ai/models/price_predictor.keras",
         "PRICE_SCALER_X_PATH": "ai/models/price_scaler_X.joblib",
         "PRICE_SCALER_Y_PATH": "ai/models/price_scaler_Y.joblib",
     }
+    cfg["FRESH"] = bool(args.fresh)
     return cfg
 
 
@@ -338,6 +399,7 @@ def main():
                         choices=['train', 'eval', 'predict'],
                         help='Which stage to run.')
     parser.add_argument('--ticker', type=str, default=None, help='Ticker symbol (e.g., BTC-EUR, AAPL, TSLA)')
+    parser.add_argument('--fresh', action='store_true', help='Ignore saved model/scalers and start fresh training')
     args = parser.parse_args()
 
     config = build_config(args)

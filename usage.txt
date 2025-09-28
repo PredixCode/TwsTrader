@@ -2,6 +2,7 @@ Main Bot:
    python main.py
 
 AI (Currently in test):
-  python unified\ai.py --mode train --ticker BTC-EUR
+  python run_ai.py --mode train --ticker BTC-EUR
   --mode: {train, eval, predict}
-  --ticker: any yfinance ticker
+  --ticker: any yfinance ticker, default=BTC-EUR
+  --fresh (only training): discard the old model and start training a new one
