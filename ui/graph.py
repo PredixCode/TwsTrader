@@ -46,10 +46,13 @@ class LiveGraph:
                 "barSpacing": 1.0,
                 "fixLeftEdge": False,
                 "fixRightEdge": False,
-                "lockVisibleTimeRangeOnResize": False
+                "lockVisibleTimeRangeOnResize": False,
+                # Keep visible range fixed when new bars arrive
+                "shiftVisibleRangeOnNewBar": False
             },
             "rightPriceScale": {
-                "autoScale": True,
+                # Do not auto-rescale vertically on updates
+                "autoScale": False,
                 "scaleMargins": {"top": 0.05, "bottom": 0.05},
                 "entireTextOnly": False,
                 "borderVisible": True
@@ -241,7 +244,6 @@ class LiveGraph:
                 "position": "aboveBar" if not is_buy else "belowBar",
                 "color": color,
                 "shape": "arrowUp" if is_buy else "arrowDown",
-                "text": text,
             }
             with self._markers_lock:
                 self._markers.append(marker)

@@ -35,9 +35,15 @@ def live_graph(stock: FinanceStock):
     graph = LiveGraph(stock)
     graph.start_auto_update()
 
-    t = graph.dataframe.index[-5]
-    p = float(graph.dataframe.loc[t]['Close'])
-    graph.add_trade_label(t, 'buy', price=p, text='BUY @ {:.2f}'.format(p), use_marker=False)
+    t0 = graph.dataframe.index[-10]
+    p0 = float(graph.dataframe.loc[t0]['Close'])
+    t1 = graph.dataframe.index[-6]
+    p1 = float(graph.dataframe.loc[t1]['Close'])
+    t2 = graph.dataframe.index[-1]
+    p2 = float(graph.dataframe.loc[t2]['Close'])
+    graph.add_trade_label(t0, 'buy', price=p0, text='BUY @ {:.2f}'.format(p0), use_marker=True)
+    graph.add_trade_label(t1, 'buy', price=p1, text='BUY @ {:.2f}'.format(p1), use_marker=True)
+    graph.add_trade_label(t2, 'sell', price=p2, text='SELL @ {:.2f}'.format(p2), use_marker=True)
 
     graph.show(block=True)
     graph.stop_auto_update()
