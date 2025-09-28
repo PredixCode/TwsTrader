@@ -104,54 +104,14 @@ class LightweightGraph:
         df = self.stock.get_all_historical_data()
         if df is None or df.empty:
             raise ValueError("No stock data returned, can't construct chart.")
-        self.dataframe = self.__normalize_dataframe(df)
-        self.stock.last_fetch_to_csv(self.dataframe)
-        
-        
+        self.dataframe = df
+        self.stock.last_fetch_to_csv()
         
         # Build chart
         self.__construct_chart()
 
     def show(self, block: bool = True) -> None:
         self.chart.show(block=block)
-
-    def __normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-
-        # Drop unwanted columns if present
-        cols_to_drop = [c for c in ["Dividends", "Stock Splits"] if c in df.columns]
-        if cols_to_drop:
-            df = df.drop(columns=cols_to_drop, errors="ignore")
-
-        # Ensure DatetimeIndex (use 'Datetime' column if needed)
-        if not isinstance(df.index, pd.DatetimeIndex):
-            if "Datetime" in df.columns:
-                df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True, errors="coerce")
-                df = df.set_index("Datetime")
-            else:
-                raise ValueError("DataFrame must have a Datetime index or a 'Datetime' column.")
-
-        # Make index timezone-naive
-        if getattr(df.index, "tz", None) is not None:
-            df.index = df.index.tz_convert(None)
-
-        # Keep only the columns needed for the chart (Volume included)
-        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        if not set(["Open", "High", "Low", "Close"]).issubset(keep):
-            missing = [c for c in ["Open", "High", "Low", "Close"] if c not in keep]
-            raise ValueError(f"Missing required OHLC columns: {missing}")
-        df = df[keep]
-
-        # Ensure numeric types; drop rows with bad OHLC, set missing volume to 0
-        for c in ["Open", "High", "Low", "Close", "Volume"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-        df = df.sort_index()
-        df = df.dropna(subset=["Open", "High", "Low", "Close"])
-        if "Volume" in df.columns:
-            df["Volume"] = df["Volume"].fillna(0)
-
-        return df
 
     def  __construct_chart(self) -> Chart:
         self.chart = Chart(title=self.stock.name, maximize=True)
