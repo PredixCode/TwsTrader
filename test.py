@@ -45,8 +45,9 @@ def local_graph(stock: FinanceStock):
     graph = LightweightGraph(stock)
     graph.show(block=True)    # or False + input("Press Enter to exit...")
 
+
 if __name__ == "__main__":
-    stock = FinanceStock("RHM.DE")
+    stock = FinanceStock("BTC-EUR")
 
     #tws_stock_stream()
     #tws_trade()

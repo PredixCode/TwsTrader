@@ -99,25 +99,138 @@ class WebGraph:
 
 class LightweightGraph:
     def __init__(self, stock: FinanceStock) -> None:
-        # Lazy import so importing this module never starts subprocesses
-
-        df = stock.get_all_historical_data()
+        # Get stock data
+        self.stock = stock
+        df = self.stock.get_all_historical_data()
         if df is None or df.empty:
             raise ValueError("No stock data returned, can't construct chart.")
+        self.dataframe = self.__normalize_dataframe(df)
+        self.stock.last_fetch_to_csv(self.dataframe)
         
-        self.df = self.__normalize_dataframe(df)
-        self.chart = Chart(title=stock.name, maximize=True)
-        self.chart.set(df)
+        
+        
+        # Build chart
+        self.__construct_chart()
 
     def show(self, block: bool = True) -> None:
         self.chart.show(block=block)
 
-    def  __normalize_dataframe(self, df: pd.DataFrame):
-        # Normalize OHLC for lightweight-charts
-        df = df[["Open", "High", "Low", "Close"]].rename(
-            columns={"Open": "open", "High": "high", "Low": "low", "Close": "close"}
-        )
+    def __normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        # Drop unwanted columns if present
+        cols_to_drop = [c for c in ["Dividends", "Stock Splits"] if c in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop, errors="ignore")
+
+        # Ensure DatetimeIndex (use 'Datetime' column if needed)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if "Datetime" in df.columns:
+                df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True, errors="coerce")
+                df = df.set_index("Datetime")
+            else:
+                raise ValueError("DataFrame must have a Datetime index or a 'Datetime' column.")
+
+        # Make index timezone-naive
         if getattr(df.index, "tz", None) is not None:
             df.index = df.index.tz_convert(None)
+
+        # Keep only the columns needed for the chart (Volume included)
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        if not set(["Open", "High", "Low", "Close"]).issubset(keep):
+            missing = [c for c in ["Open", "High", "Low", "Close"] if c not in keep]
+            raise ValueError(f"Missing required OHLC columns: {missing}")
+        df = df[keep]
+
+        # Ensure numeric types; drop rows with bad OHLC, set missing volume to 0
+        for c in ["Open", "High", "Low", "Close", "Volume"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        df = df.sort_index()
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
+        if "Volume" in df.columns:
+            df["Volume"] = df["Volume"].fillna(0)
+
         return df
 
+    def  __construct_chart(self) -> Chart:
+        self.chart = Chart(title=self.stock.name, maximize=True)
+
+        self.chart.topbar.visible = False
+        self.chart.layout(background_color="#0e1117", text_color="#d1d5db")
+        self.chart.options = {
+            "timeScale": {
+                "timeVisible": True,
+                "secondsVisible": False,
+                "rightOffset": 0,
+                "barSpacing": 1.0,
+                "fixLeftEdge": False,
+                "fixRightEdge": False,
+                "lockVisibleTimeRangeOnResize": False
+            },
+            "rightPriceScale": {
+                "autoScale": True,
+                "scaleMargins": {"top": 0.05, "bottom": 0.05},
+                "entireTextOnly": False,
+                "borderVisible": True
+            },
+            "handleScale": {
+                "mouseWheel": True,
+                "pinch": True,
+                "axisPressedMouseMove": {"time": True, "price": True},
+            },
+            "handleScroll": {"mouseWheel": True, "pressedMouseMove": True},
+            "crosshair": {"mode": 1},
+            "grid": {
+                "vertLines": {"visible": True, "color": "#2a2e39", "style": 0},
+                "horzLines": {"visible": True, "color": "#2a2e39", "style": 0}
+            }
+        }
+
+        # Set data first
+        self.chart.set(self.dataframe)
+
+        # IMPORTANT: time_scale is a function → call it to get the API object
+        ts = self.chart.time_scale() if callable(self.chart.time_scale) else self.chart.time_scale
+
+        # Try canonical "show all" first
+        try:
+            ts.fit_content()
+            return self.chart
+        except Exception:
+            pass
+
+        # Fallbacks for different wrapper method names/APIs
+        def call_first(obj, names, *args, **kwargs):
+            for name in names:
+                m = getattr(obj, name, None)
+                if callable(m):
+                    return m(*args, **kwargs)
+            raise AttributeError(f"None of {names} exist on {obj}")
+
+        # Fallback by logical range
+        n = len(self.dataframe)
+        try:
+            call_first(
+                ts,
+                ["set_visible_logical_range", "setVisibleLogicalRange"],
+                {"from": 0, "to": max(0, n - 1)},
+            )
+            return self.chart
+        except Exception:
+            pass
+
+        # Fallback by timestamp range
+        try:
+            t0 = self.dataframe.index.min()
+            t1 = self.dataframe.index.max()
+            if hasattr(t0, "to_pydatetime"):
+                t0, t1 = t0.to_pydatetime(), t1.to_pydatetime()
+            call_first(
+                ts,
+                ["set_visible_range", "setVisibleRange"],
+                {"from": t0, "to": t1},
+            )
+        except Exception:
+            # If everything fails, you’ll still have the default view.
+            pass

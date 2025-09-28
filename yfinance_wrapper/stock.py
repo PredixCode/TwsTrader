@@ -103,75 +103,17 @@ class FinanceStock:
         self.last_fetch = all_history.copy()
         return all_history
 
-    def get_all_historical_data_accurate(self, queue: FetchQueue = None) -> pd.DataFrame:
-        """
-        Fetches high-frequency historical data and resamples it to a consistent
-        1-minute interval, creating the ideal dataset for AI training.
-
-        This method prioritizes accuracy by using only granular intervals
-        and then creating a uniform timeline from them.
-
-        Returns:
-            pd.DataFrame: A clean, 1-minute resampled DataFrame.
-        """
-        print(f"\n--- Starting ACCURATE data fetch for {self.name} ---")
-        
-        # 1. Fetch only the specified high-frequency intervals
-        intervals_to_fetch = {
-            "1m": "max", 
-            "2m": "max", 
-            "5m": "max",
-        }
-        data_frames = []
-
-        if queue is None:
-            queue = self.queue
-            
-        for interval, period in intervals_to_fetch.items():
-            print(f"   -> Fetching interval: {interval} (for last {period})")
-            df = queue.fetch(self.ticker, self.ticker_symbol, period=period, interval=interval)
-            if not df.empty:
-                data_frames.append(df)
-        
-        if not data_frames:
-            print("   -> No data fetched. Cannot proceed.")
-            return pd.DataFrame()
-
-        # 2. Merge the raw data, prioritizing the most granular first
-        print("\n--- Merging all fetched data ---")
-        merged_data = self.__merge_historical_data(data_frames)
-        print(f"   -> Raw merged data has {len(merged_data)} points.")
-
-        # 3. Resample the merged data to a consistent 1-minute ('1T') frequency
-        print("\n--- Resampling to a consistent 1-minute timeline ---")
-        aggregation_rules = {
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        }
-        resampled_data = merged_data.resample('1min').apply(aggregation_rules)
-
-        # 4. Fill the gaps created by resampling
-        #    - Forward-fill prices: If no trade happened, the price remains the same.
-        #    - Fill volume with 0: If no trade happened, the volume is zero.
-        resampled_data[['Open', 'High', 'Low', 'Close']] = resampled_data[['Open', 'High', 'Low', 'Close']].ffill()
-        resampled_data['Volume'] = resampled_data['Volume'].fillna(0)
-        resampled_data.dropna(inplace=True) # Drop any remaining NaNs at the start
-
-        print(f"   -> Final accurate dataset has {len(resampled_data)} consistent 1-minute steps.")
-        self.last_fetch = resampled_data.copy()
-        return resampled_data
-
-    def last_fetch_to_csv(self):
+    def last_fetch_to_csv(self, last_fetch: pd.Dataframe=None):
         """
         Saves the last fetched pandas DataFrame to a CSV file.
         Works after calling either get_historical_data() or get_historical_data_by_range().
         """
-        if self.last_fetch is None or not isinstance(self.last_fetch, pd.DataFrame) or self.last_fetch.empty:
-            print("Last fetch is empty or invalid. Nothing to save.")
-            return
+        if last_fetch is None:
+            if self.last_fetch is None or not isinstance(self.last_fetch, pd.DataFrame) or self.last_fetch.empty:
+                print("Last fetch is empty or invalid. Nothing to save.")
+                return
+        else:
+            self.last_fetch = last_fetch
 
         # Sanitize the name to make it a valid filename
         safe_filename = "".join([c for c in self.name if c.isalpha() or c.isdigit() or c.isspace()]).rstrip()
