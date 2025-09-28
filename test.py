@@ -47,10 +47,10 @@ def local_graph(stock: FinanceStock):
 
 
 if __name__ == "__main__":
-    stock = FinanceStock("RHM.DE")
+    stock = FinanceStock("BTC-EUR")
     print(f"Current price: {stock.live_price}")
 
     #tws_stock_stream()
     #tws_trade()
-    #web_graph(stock)
-    local_graph(stock)
+    web_graph(stock)
+    #local_graph(stock)

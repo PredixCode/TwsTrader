@@ -1,8 +1,14 @@
 Main Bot:
    python main.py
 
-AI (Currently in test):
+AI:
   python run_ai.py --mode train --ticker BTC-EUR
   --mode: {train, eval, predict}
   --ticker: any yfinance ticker, default=BTC-EUR
+
+  optional:
+  --eval-mode: {one_step, autoreg} default=one_step
   --fresh (only training): discard the old model and start training a new one
+
+  debug:
+  --gpu_check: Check for available GPU at startup 

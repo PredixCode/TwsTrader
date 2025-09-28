@@ -88,7 +88,7 @@ class WebGraph:
 
     def __save_plot(self):
         file_dir = os.path.dirname(os.path.realpath(__file__))
-        output_dir = f"{file_dir}\charts"
+        output_dir = f"{file_dir}\data\charts"
         os.makedirs(output_dir, exist_ok=True)
         fig_title = self.fig.layout["title"]["text"]
         output_path = os.path.join(output_dir, f"{fig_title}.html")
