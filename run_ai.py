@@ -10,7 +10,7 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 
 from yfinance_wrapper.stock import FinanceStock
-from ai.price_predictor import PricePredictorLSTM  # <-- use the shared model
+from ai.price_predictor import PricePredictorLSTM  # shared model
 
 
 # ============== Utilities ==============
@@ -49,10 +49,9 @@ def fetch_price_df(ticker: str) -> pd.DataFrame:
     df = stock.get_historical_data()  # typically 7d @ 1m
     if df.empty:
         return df
-    # Save last fetch as CSV (as you added)
+    # Save last fetch as CSV
     stock.last_fetch_to_csv()
 
-    # Basic OHLCV frame
     cols_needed = ['Open', 'High', 'Low', 'Close', 'Volume']
     df = df[cols_needed].dropna()
     return df
@@ -67,7 +66,7 @@ def create_price_sequences(df: pd.DataFrame, sequence_length: int, feature_cols:
     feat = df[feature_cols].values
     tgt = df[target_cols].shift(-1).dropna().values
 
-    # Align features and targets (drop the last feature row to match shifted targets)
+    # Align features and targets (drop last feature row to match shifted targets)
     feat = feat[:len(tgt)]
 
     X, y = [], []
@@ -137,7 +136,6 @@ def infer_next_timestamp(df: pd.DataFrame):
     if len(idx) < 2:
         return None, None
 
-    # Prefer median of recent deltas to be robust to occasional gaps
     deltas = idx.to_series().diff().dropna()
     if deltas.empty:
         return None, None
@@ -158,7 +156,6 @@ def run_price_training(config):
         print("No data available to train.")
         return
 
-    # Optionally cap dataset size for quick iterations
     if config['MAX_BARS'] is not None and len(df) > config['MAX_BARS']:
         df = df.iloc[-config['MAX_BARS']:]
 
@@ -174,14 +171,17 @@ def run_price_training(config):
     X_train, X_test, y_train, y_test = time_series_train_test_split(X, y, test_ratio=config['TEST_RATIO'])
     X_train_s, X_test_s, y_train_s, y_test_s, X_scaler, Y_scaler = scale_train_test(X_train, X_test, y_train, y_test)
 
-    # Use the shared model class
+    # Build and compile the shared model
     model_wrapper = PricePredictorLSTM(seq_len, num_features=X.shape[2], num_targets=len(target_cols))
-    # Compile the underlying Keras model (keeps things explicit)
-    model_wrapper.model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss='huber', metrics=['mae'])
+    model_wrapper.model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=config['LR'], clipnorm=1.0),
+        loss='huber',
+        metrics=['mae']
+    )
 
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True, monitor='val_loss'),
-        tf.keras.callbacks.ReduceLROnPlateau(patience=3, factor=0.5, min_lr=1e-5)
+        tf.keras.callbacks.EarlyStopping(patience=8, min_delta=5e-7, restore_best_weights=True, monitor='val_loss'),
+        tf.keras.callbacks.ReduceLROnPlateau(patience=4, factor=0.5, min_lr=1e-5, monitor='val_loss')
     ]
 
     model_wrapper.model.fit(
@@ -193,7 +193,6 @@ def run_price_training(config):
         verbose=1
     )
 
-    # Save model + scalers
     os.makedirs(os.path.dirname(config['PRICE_MODEL_PATH']), exist_ok=True)
     model_wrapper.save(config['PRICE_MODEL_PATH'])
     joblib.dump(X_scaler, config['PRICE_SCALER_X_PATH'])
@@ -222,31 +221,27 @@ def evaluate_price_model(config):
         print("No sequences generated. Check data and sequence length.")
         return
 
-    X_train, X_test, y_train, y_test = time_series_train_test_split(X, y, test_ratio=config['TEST_RATIO'])
+    _, X_test, _, y_test = time_series_train_test_split(X, y, test_ratio=config['TEST_RATIO'])
 
-    # Load model and scalers
     if not os.path.exists(config['PRICE_MODEL_PATH']):
         print(f"Model not found at {config['PRICE_MODEL_PATH']}. Train first.")
         return
-    model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # returns a tf.keras.Model
+    model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # tf.keras.Model
 
     X_scaler = joblib.load(config['PRICE_SCALER_X_PATH'])
     Y_scaler = joblib.load(config['PRICE_SCALER_Y_PATH'])
 
-    # Scale using loaded scalers
     num_features = X.shape[2]
     X_test_s = X_scaler.transform(X_test.reshape(-1, num_features)).reshape(X_test.shape)
 
-    # Predict
+    # Predict in scaled space
     y_pred_s = model.predict(X_test_s, verbose=0)
 
-    # Inverse to price/volume scale
-    y_test_inv = Y_scaler.inverse_transform(y_test)
     y_pred_inv = Y_scaler.inverse_transform(y_pred_s)
+    y_test_inv = y_test
 
-    compute_metrics(y_test_inv, y_pred_inv, target_cols)
+    compute_metrics(y_test_inv, y_pred_inv, target_cols)  # target_cols now length 4
 
-    # Optional: quick visualization on Close
     try:
         idx_close = target_cols.index('Close')
         plt.figure(figsize=(13, 5))
@@ -267,20 +262,20 @@ def predict_next_price(config):
         print("No data available to predict.")
         return
 
-    feature_cols = config['PRICE_FEATURES']
-    target_cols = config['PRICE_TARGETS']
+    feature_cols = config['PRICE_FEATURES']  # includes Volume
+    target_cols = config['PRICE_TARGETS']    # ["Open","High","Low","Close"]
     seq_len = config['PRICE_SEQUENCE_LENGTH']
 
-    df = add_mid_column(df)  # harmless if not used
+    df = add_mid_column(df)
     if len(df) < seq_len + 1:
         print(f"Not enough data. Need at least {seq_len+1} rows, have {len(df)}.")
         return
 
-    # Load model & scalers
     if not os.path.exists(config['PRICE_MODEL_PATH']):
         print(f"Model not found at {config['PRICE_MODEL_PATH']}. Train first.")
         return
-    model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # returns a tf.keras.Model
+
+    model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # tf.keras.Model
     X_scaler = joblib.load(config['PRICE_SCALER_X_PATH'])
     Y_scaler = joblib.load(config['PRICE_SCALER_Y_PATH'])
 
@@ -291,37 +286,42 @@ def predict_next_price(config):
     X_latest_s = X_scaler.transform(X_latest.reshape(-1, num_features)).reshape(X_latest.shape)
 
     y_next_s = model.predict(X_latest_s, verbose=0)
-    y_next = Y_scaler.inverse_transform(y_next_s)[0]
+    y_next = Y_scaler.inverse_transform(y_next_s)[0]  # shape (4,) for O/H/L/C
 
-    # Infer and display the next timestamp
+    # Infer next timestamp
     next_ts, step_delta = infer_next_timestamp(df)
+
+    # Append Volume=0.0 for downstream consumers expecting OHLCV
+    full_names = ["Open", "High", "Low", "Close", "Volume"]
+    full_values = list(y_next) + [0.0]
+
     print(f"Next-step prediction for {config['TICKER']}:")
     if next_ts is None:
         print("  Datetime: (could not infer; insufficient or non-datetime index)")
     else:
         print(f"  Datetime: {next_ts} (step ≈ {step_delta})")
-    for i, name in enumerate(target_cols):
-        print(f"  {name}: {y_next[i]:.4f}")
+    for name, val in zip(full_names, full_values):
+        print(f"  {name}: {val:.4f}")
 
 
 # ============== CLI ==============
 
 def build_config(args):
-    # Minimal, extendable config
     cfg = {
         "SEED": 42,
-        "TICKER": args.ticker or "AAPL",
-        "MAX_BARS": 200_000,       # Limit history for speed; set None for full
-        "STRIDE": 1,               # Window step
+        "TICKER": args.ticker or "BTC-EUR",
+        "MAX_BARS": 200_000,
+        "STRIDE": 1,
         "TEST_RATIO": 0.2,
 
-        # Use OHLCV for both features and targets
+        # Keep Volume in features; drop it from targets
         "PRICE_FEATURES": ["Open", "High", "Low", "Close", "Volume"],
-        "PRICE_TARGETS": ["Open", "High", "Low", "Close", "Volume"],
+        "PRICE_TARGETS": ["Open", "High", "Low", "Close"],
 
-        "PRICE_SEQUENCE_LENGTH": 60,
-        "PRICE_EPOCHS": 30,
-        "PRICE_BATCH_SIZE": 128,
+        "PRICE_SEQUENCE_LENGTH": 90,
+        "PRICE_EPOCHS": 50,
+        "PRICE_BATCH_SIZE": 256,
+        "LR": 3e-4,
 
         "PRICE_MODEL_PATH": "ai/models/price_predictor.keras",
         "PRICE_SCALER_X_PATH": "ai/models/price_scaler_X.joblib",
@@ -337,7 +337,7 @@ def main():
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'eval', 'predict'],
                         help='Which stage to run.')
-    parser.add_argument('--ticker', type=str, default=None, help='Ticker symbol (e.g., AAPL, TSLA)')
+    parser.add_argument('--ticker', type=str, default=None, help='Ticker symbol (e.g., BTC-EUR, AAPL, TSLA)')
     args = parser.parse_args()
 
     config = build_config(args)

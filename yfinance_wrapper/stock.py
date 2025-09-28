@@ -77,53 +77,7 @@ class FinanceStock:
         except Exception as e:
             print(f"An error occurred while fetching data by range: {e}")
             return pd.DataFrame()
-
-    def _now_utc_naive(self) -> pd.Timestamp:
-        return pd.Timestamp.now(tz="UTC").tz_localize(None)
-
-    def _last_completed_label(self, now_ts: pd.Timestamp, interval: str) -> pd.Timestamp:
-        """
-        Returns label (start time) of the last completed bar for a given interval.
-        Assumes timestamps are bar-start labels as typical for yfinance.
-        """
-        # Minute-based
-        if interval == "1m":
-            return (now_ts.floor("T") - pd.Timedelta(minutes=1))
-        if interval == "2m":
-            base = now_ts.floor("2T")
-            return base - pd.Timedelta(minutes=2)
-        if interval == "5m":
-            base = now_ts.floor("5T")
-            return base - pd.Timedelta(minutes=5)
-        if interval in ("60m", "90m", "1h"):
-            base = now_ts.floor("H")
-            if interval in ("60m", "1h"):
-                return base - pd.Timedelta(hours=1)
-            return base - pd.Timedelta(minutes=90)
-        # Day/Week/Month
-        if interval == "1d":
-            base = now_ts.floor("D")
-            return base - pd.Timedelta(days=1)
-        if interval == "1wk":
-            base = now_ts.floor("W-MON")  # week label; adjust as needed
-            return base - pd.Timedelta(weeks=1)
-        if interval == "1mo":
-            # previous month start
-            mstart = pd.Timestamp(now_ts.year, now_ts.month, 1)
-            # last completed month starts at previous month’s first day
-            prev_m = (mstart - pd.Timedelta(days=1)).replace(day=1)
-            return prev_m
-        # default conservative
-        return now_ts - pd.Timedelta(minutes=1)
-
-    def _should_update_interval(self, interval: str, cached_df: pd.DataFrame | None, now_ts: pd.Timestamp) -> bool:
-        if cached_df is None or cached_df.empty:
-            return True
-        last_cached = pd.Timestamp(cached_df.index.max())
-        last_completed = self._last_completed_label(now_ts, interval)
-        # Update only if we can add at least one fully completed new bar
-        return last_cached < last_completed
-
+        
     def get_all_historical_data(self, queue: FetchQueue = None) -> pd.DataFrame:
         print(f"\n--- Starting comprehensive data fetch for {self.name} ---")
         if queue is None:
@@ -220,6 +174,52 @@ class FinanceStock:
             return full_path
         except Exception as e:
             print(f"❌ Error: Could not save file. Reason: {e}")
+
+    def _now_utc_naive(self) -> pd.Timestamp:
+        return pd.Timestamp.now(tz="UTC").tz_localize(None)
+
+    def _last_completed_label(self, now_ts: pd.Timestamp, interval: str) -> pd.Timestamp:
+        """
+        Returns label (start time) of the last completed bar for a given interval.
+        Assumes timestamps are bar-start labels as typical for yfinance.
+        """
+        # Minute-based
+        if interval == "1m":
+            return (now_ts.floor("T") - pd.Timedelta(minutes=1))
+        if interval == "2m":
+            base = now_ts.floor("2T")
+            return base - pd.Timedelta(minutes=2)
+        if interval == "5m":
+            base = now_ts.floor("5T")
+            return base - pd.Timedelta(minutes=5)
+        if interval in ("60m", "90m", "1h"):
+            base = now_ts.floor("H")
+            if interval in ("60m", "1h"):
+                return base - pd.Timedelta(hours=1)
+            return base - pd.Timedelta(minutes=90)
+        # Day/Week/Month
+        if interval == "1d":
+            base = now_ts.floor("D")
+            return base - pd.Timedelta(days=1)
+        if interval == "1wk":
+            base = now_ts.floor("W-MON")  # week label; adjust as needed
+            return base - pd.Timedelta(weeks=1)
+        if interval == "1mo":
+            # previous month start
+            mstart = pd.Timestamp(now_ts.year, now_ts.month, 1)
+            # last completed month starts at previous month’s first day
+            prev_m = (mstart - pd.Timedelta(days=1)).replace(day=1)
+            return prev_m
+        # default conservative
+        return now_ts - pd.Timedelta(minutes=1)
+
+    def _should_update_interval(self, interval: str, cached_df: pd.DataFrame | None, now_ts: pd.Timestamp) -> bool:
+        if cached_df is None or cached_df.empty:
+            return True
+        last_cached = pd.Timestamp(cached_df.index.max())
+        last_completed = self._last_completed_label(now_ts, interval)
+        # Update only if we can add at least one fully completed new bar
+        return last_cached < last_completed
 
     def __merge_historical_data(self, dataframes: list[pd.DataFrame]) -> pd.DataFrame:
         if not dataframes:
