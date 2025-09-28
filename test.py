@@ -43,7 +43,7 @@ def web_graph(stock: FinanceStock):
 def local_graph(stock: FinanceStock):
     mp.freeze_support()
     graph = LightweightGraph(stock)
-    graph.show(block=True)    # or False + input("Press Enter to exit...")
+    graph.show(block=True)
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ class LightweightGraph:
     def __init__(self, stock: FinanceStock) -> None:
         # Get stock data
         self.stock = stock
-        df = self.stock.get_all_historical_data()
+        df = self.stock.get_historical_data()
         if df is None or df.empty:
             raise ValueError("No stock data returned, can't construct chart.")
         self.dataframe = df
