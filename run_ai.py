@@ -263,7 +263,7 @@ def run_price_training(config):
 
 
 def evaluate_price_model(config):
-    print("\n" + "="*20 + " OHLCV PREDICTION EVALUATION " + "="*20)
+    print("\n" + "="*20 + " OHLCV PREDICTION EVALUATION (AUTOREGRESSIVE) " + "="*20)
     df = fetch_price_df(config['TICKER'])
     if df.empty:
         print("No data available to evaluate.")
@@ -272,42 +272,67 @@ def evaluate_price_model(config):
     if config['MAX_BARS'] is not None and len(df) > config['MAX_BARS']:
         df = df.iloc[-config['MAX_BARS']:]
 
-    feature_cols = config['PRICE_FEATURES']
-    target_cols = config['PRICE_TARGETS']
-    seq_len = config['PRICE_SEQUENCE_LENGTH']
+    feature_cols = config['PRICE_FEATURES']     # ["Open","High","Low","Close","Volume"]
+    target_cols  = config['PRICE_TARGETS']      # ["Open","High","Low","Close"]
+    seq_len      = config['PRICE_SEQUENCE_LENGTH']
+    num_features = len(feature_cols)
+    num_targets  = len(target_cols)
 
+    # Build raw (unscaled) sequences and split
     X, y = create_price_sequences(df, seq_len, feature_cols, target_cols, stride=config['STRIDE'])
     if len(X) == 0:
         print("No sequences generated. Check data and sequence length.")
         return
-
     _, X_test, _, y_test = time_series_train_test_split(X, y, test_ratio=config['TEST_RATIO'])
 
+    # Load model + scalers
     if not os.path.exists(config['PRICE_MODEL_PATH']):
         print(f"Model not found at {config['PRICE_MODEL_PATH']}. Train first.")
         return
-    model = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # tf.keras.Model
-
+    model    = PricePredictorLSTM.load(config['PRICE_MODEL_PATH'])  # tf.keras.Model
     X_scaler = joblib.load(config['PRICE_SCALER_X_PATH'])
     Y_scaler = joblib.load(config['PRICE_SCALER_Y_PATH'])
 
-    num_features = X.shape[2]
-    X_test_s = X_scaler.transform(X_test.reshape(-1, num_features)).reshape(X_test.shape)
+    # Start from the first test window (raw scale), then roll forward by feeding predictions
+    window_raw = X_test[0].copy()   # shape: (seq_len, num_features), raw values
+    steps = len(y_test)             # predict across the entire test horizon
+    preds = np.zeros((steps, num_targets), dtype=np.float32)
 
-    # Predict in scaled space
-    y_pred_s = model.predict(X_test_s, verbose=0)
+    for t in range(steps):
+        # Scale current window for the model
+        w_scaled = X_scaler.transform(window_raw.reshape(-1, num_features)).reshape(1, seq_len, num_features)
 
-    y_pred_inv = Y_scaler.inverse_transform(y_pred_s)
-    y_test_inv = y_test
+        # Predict next O/H/L/C (scaled -> inverse to raw)
+        y_next_s = model.predict(w_scaled, verbose=0)
+        y_next   = Y_scaler.inverse_transform(y_next_s)[0]  # shape: (4,)
 
-    compute_metrics(y_test_inv, y_pred_inv, target_cols)  # target_cols now length 4
+        preds[t] = y_next
 
+        # Build the synthetic next feature row: O/H/L/C from prediction, Volume = 0.0
+        next_feat_row = np.array([y_next[0], y_next[1], y_next[2], y_next[3], 0.0], dtype=np.float32)
+
+        # Advance window: drop oldest row, append synthetic next row
+        window_raw = np.vstack([window_raw[1:], next_feat_row])
+
+    # Ground truth is already in raw scale (O/H/L/C only)
+    y_true = y_test[:steps]
+
+    # Metrics
+    mae = np.mean(np.abs(y_true - preds), axis=0)
+    rmse = np.sqrt(np.mean((y_true - preds) ** 2, axis=0))
+    print("Autoregressive rollout metrics (using predictions as inputs):")
+    for i, name in enumerate(target_cols):
+        print(f"  {name}: MAE={mae[i]:.4f}, RMSE={rmse[i]:.4f}")
+    print(f"Overall MAE={mae.mean():.4f}, RMSE={rmse.mean():.4f}")
+
+    # Optional: quick visualization on Close
     try:
         idx_close = target_cols.index('Close')
+        nplot = min(300, steps)
         plt.figure(figsize=(13, 5))
-        plt.title(f"{config['TICKER']} - Close: Actual vs Predicted (Test slice)")
-        plt.plot(y_test_inv[:300, idx_close], label='Actual Close', alpha=0.85)
-        plt.plot(y_pred_inv[:300, idx_close], label='Predicted Close', alpha=0.85)
+        plt.title(f"{config['TICKER']} - Close: Autoregressive Actual vs Predicted (first {nplot} steps)")
+        plt.plot(y_true[:nplot, idx_close], label='Actual Close', alpha=0.85)
+        plt.plot(preds[:nplot, idx_close], label='Predicted Close', alpha=0.85)
         plt.legend()
         plt.grid(True)
         plt.show()
