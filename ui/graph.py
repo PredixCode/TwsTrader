@@ -304,25 +304,6 @@ class LiveGraph:
             pass
         return time_dt
 
-    def add_random_trade_labels(self, count: int = 20, seed: Optional[int] = 42) -> None:
-        """
-        Scatter random buy/sell markers across existing candles for testing.
-        Uses datetime from the DataFrame index (no unix conversion).
-        """
-        if len(self.dataframe) == 0 or count <= 0:
-            return
-
-        rng = random.Random(seed)
-        idx = list(self.dataframe.index)
-        n = len(idx)
-        if n == 0:
-            return
-
-        picks = [idx[rng.randrange(n)] for _ in range(count)]
-        for t in picks:
-            side = "buy" if rng.random() < 0.5 else "sell"
-            self.add_trade_label(t, side=side, text=("B" if side == "buy" else "S"))
-
     # -------- Internals for markers --------
 
     def _apply_markers(self) -> None:

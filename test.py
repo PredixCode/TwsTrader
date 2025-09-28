@@ -34,7 +34,6 @@ def live_graph(stock: FinanceStock):
     mp.freeze_support()
     graph = LiveGraph(stock)
     graph.start_auto_update()
-    graph.add_random_trade_labels(count=500)
 
     t = graph.dataframe.index[-5]
     p = float(graph.dataframe.loc[t]['Close'])
