@@ -13,7 +13,7 @@ class FetchCache:
     that preserve older cached history on refresh.
     """
 
-    def __init__(self, cache_file: str = "data/fetch_cache.pkl", max_age_seconds: int = 7 * 24 * 60 * 60):
+    def __init__(self, cache_file: str = "data/fetch_cache.pkl", max_age_seconds: int = 24 * 60 * 60):
         # Default TTL = 1 week
         file_dir = os.path.dirname(os.path.realpath(__file__))
         self.cache_file = os.path.join(file_dir, cache_file)
