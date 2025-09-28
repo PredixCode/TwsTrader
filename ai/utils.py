@@ -33,7 +33,7 @@ def set_random_seed(seed: int = 42):
 
 def fetch_price_df(ticker: str) -> pd.DataFrame:
     stock = FinanceStock(ticker)
-    df = stock.get_max_historical_data(intervals=["1m", "2m", "5m"])
+    df = stock.get_accurate_max_historical_data()
     if df.empty:
         return df
     # Save last fetch as CSV
