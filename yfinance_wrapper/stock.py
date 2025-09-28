@@ -36,10 +36,8 @@ class FinanceStock:
         self,
         period: str = "7d",
         interval: str = "1m",
-        queue: Optional[FetchCache] = None,
     ) -> pd.DataFrame:
-        q = queue or self.queue
-        df = q.fetch(self.ticker, self.ticker_symbol, period=period, interval=interval)
+        df = self.queue.fetch(self.ticker, self.ticker_symbol, period=period, interval=interval)
         self.last_fetch = df.copy()
         return df
 
@@ -48,7 +46,7 @@ class FinanceStock:
         Fetch 5m, 2m, then 1m (all with period='max') and merge so higher resolution
         overwrites overlapping coarse bars. 1m:max always reloads.
         """
-        print(f"[FinanceStock] --- Retrieving accurate market data interval=['5m', '2m', '1m'] ({self.name})---")
+        print(f"[FinanceStock] --- Retrieving accurate market data ({self.name} -interval=['5m', '2m', '1m'])---")
         intervals: List[str] = ["5m", "2m", "1m"]
         frames: List[pd.DataFrame] = []
         for interval in intervals:
