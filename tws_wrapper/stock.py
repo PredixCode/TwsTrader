@@ -1,35 +1,26 @@
+# tws_wrapper/stock.py
+
 import math
 import time
 from datetime import datetime
-
-from ib_insync import Ticker, Contract
+from ib_insync import Ticker, Contract, ContractDetails
 from ib_insync import Stock as IBStock
-
 from tws_wrapper.connection import TwsConnection
-
-
 from enum import IntEnum
+
 class MarketType(IntEnum):
     LIVE = 1
     DELAYED = 3
     FROZEN = 2
     DELAYED_FROZEN = 4
-
     @classmethod
-    def names(cls):
-        return [e.name for e in cls]
+    def names(cls): return [e.name for e in cls]
     @classmethod
-    def values(cls):
-        return [e.value for e in cls]
+    def values(cls): return [e.value for e in cls]
     @classmethod
-    def entries(cls):
-        return [(e.name, e.value) for e in cls]
-
+    def entries(cls): return [(e.name, e.value) for e in cls]
 
 class TwsStock:
-    """
-    Ib_insync wrapper for a specified Stock, with streaming + basic trading.
-    """
     def __init__(
         self,
         connection: TwsConnection,
@@ -37,28 +28,24 @@ class TwsStock:
         exchange: str = 'SMART',
         currency: str = 'EUR',
         primaryExchange: str|None = None,
-        market_data_type: int|None = None ):
-
+        market_data_type: int|None = None
+    ):
         self.symbol = symbol
         self.conn = connection
-
         if primaryExchange:
             self.contract = IBStock(symbol, exchange, currency, primaryExchange=primaryExchange)
         else:
             self.contract = IBStock(symbol, exchange, currency)
-
         self._qualified = False
-        self.market_data_type: int|None = market_data_type  # 1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen, None=Auto-Discover
+        self.market_data_type: int|None = market_data_type
         self._ticker: Ticker|None = None
+        self._min_tick: float|None = None  # <-- cache
 
     def _subscribe(self, md_type: int) -> Ticker:
         ib = self.conn.connect()
         self.qualify()
         ib.reqMarketDataType(md_type)
-        try:
-            ib.cancelMktData(self.contract)
-        except Exception:
-            pass
+        # Do NOT call cancelMktData here; it causes noisy "No reqId" logging.
         t = ib.reqMktData(self.contract, '', snapshot=False, regulatorySnapshot=False)
         ib.sleep(1.0)
         return t
@@ -70,6 +57,22 @@ class TwsStock:
             self.contract = qualified
             self._qualified = True
         return self.contract
+
+    def get_min_tick(self) -> float:
+        """
+        Fetch and cache exchange minTick (min price increment) for this contract.
+        """
+        if self._min_tick is not None:
+            return self._min_tick
+        ib = self.conn.connect()
+        self.qualify()
+        cdetails: list[ContractDetails] = ib.reqContractDetails(self.contract)
+        if not cdetails:
+            # Fall back to a conservative default; XETRA around €2000 often uses 0.5
+            self._min_tick = 0.5
+        else:
+            self._min_tick = float(cdetails[0].minTick or 0.5)
+        return self._min_tick
 
     def get_ticker(self, market_data_type: int|None = None) -> Ticker:
         def __is_valid(t: Ticker) -> bool:
@@ -107,8 +110,7 @@ class TwsStock:
 
         ticker = __find__market_for_ticker()
         if ticker is None:
-            raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock=(Symbol,Exchange,Currency)\n"+
-                            "HINT: Either the stock parameters are invalid OR the market data for this stock is not subscribed.")
+            raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock.")
         return ticker
 
     def snapshot(self) -> dict:
@@ -119,24 +121,16 @@ class TwsStock:
         mid = (bid + ask)/2 if (not math.isnan(bid) and not math.isnan(ask)) else float('nan')
         return dict(symbol=self.symbol, bid=bid, ask=ask, last=last, mid=mid,
                     bidSize=t.bidSize or 0, askSize=t.askSize or 0, lastSize=t.lastSize or 0)
-    
-    # -- Helper Functions --
+
     def stream_price(self, duration_sec: int = 60) -> None:
         print(f"Streaming {self.symbol} for {duration_sec}s (marketDataType={self.market_data_type}).")
-
         end_time = time.time() + duration_sec
         last_printed = None
         while time.time() < end_time:
-            self.conn.sleep(0.2)  # yield to event loop
+            self.conn.sleep(0.2)
             snapshot = self.snapshot()
             if snapshot != last_printed:
                 ts_local = datetime.now().strftime("%H:%M:%S")
                 print(f"{ts_local}: {snapshot}")
                 last_printed = snapshot
-        print("Done.")
-
-if __name__ == "__main__":
-    # Example usage
-    with TwsConnection() as conn:
-        feed = TwsStock(conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
-        feed.stream_price(duration_sec=60)
+        print(f"Done streaming ({duration_sec}s).")

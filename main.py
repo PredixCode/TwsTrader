@@ -24,7 +24,7 @@ if __name__ == "__main__":
         outsideRTH=False,
         history_period="7d",
         history_interval="1m",
-        market_data_type=None,   # auto-discover
+        market_data_type=3,   # None=auto-discover
         wait_for_fills=False,
         max_position=100,
         session_window=10000,

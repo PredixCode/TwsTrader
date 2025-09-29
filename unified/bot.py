@@ -1,6 +1,6 @@
 # unified/bot.py
 from dataclasses import dataclass
-from typing import Optional, Literal
+from typing import Optional, Literal, Tuple
 import pandas as pd
 import math
 
@@ -84,10 +84,11 @@ class UnifiedTradingBot:
 
     # ---------- Initialization ----------
     def ensure_initialized(self) -> None:
-        self.stock.get_ticker()  # ensures contract + market data type
+        # Ensures contract + market data type + minTick cache
+        self.stock.get_ticker()
+        _ = self.stock.get_min_tick()
         if not self._history_initialized:
             self._init_history()
-            # Let strategy learn initial state
             self.strategy.warmup(self.session_df)
 
     def _init_history(self) -> None:
@@ -98,15 +99,14 @@ class UnifiedTradingBot:
         if df is None or df.empty:
             self.session_df = pd.DataFrame(columns=["Open", "High", "Low", "Close"])
         else:
-            # Normalize column names to expected OHLC
             cols = {c.lower(): c for c in df.columns}
             need = ["open", "high", "low", "close"]
             if not all(c in cols for c in need):
-                # Try to rename if mixed case
-                rename = {df.columns[df.columns.str.lower() == "open"][0]: "Open"} if "open" in cols else {}
-                rename |= {df.columns[df.columns.str.lower() == "high"][0]: "High"} if "high" in cols else {}
-                rename |= {df.columns[df.columns.str.lower() == "low"][0]: "Low"} if "low" in cols else {}
-                rename |= {df.columns[df.columns.str.lower() == "close"][0]: "Close"} if "close" in cols else {}
+                rename = {}
+                if "open" in cols:  rename |= {df.columns[df.columns.str.lower() == "open"][0]: "Open"}
+                if "high" in cols:  rename |= {df.columns[df.columns.str.lower() == "high"][0]: "High"}
+                if "low" in cols:   rename |= {df.columns[df.columns.str.lower() == "low"][0]: "Low"}
+                if "close" in cols: rename |= {df.columns[df.columns.str.lower() == "close"][0]: "Close"}
                 df = df.rename(columns=rename)
             else:
                 df = df.rename(columns={
@@ -119,21 +119,18 @@ class UnifiedTradingBot:
 
         self._history_initialized = True
 
-        # Initialize live bar seed
+        # Seed last price from history but start a fresh live bar
         if self.session_df is not None and not self.session_df.empty:
             last_close = float(self.session_df["Close"].iloc[-1])
             self._last_price = last_close
-            last_idx = self.session_df.index[-1]
-            self._cur_minute = pd.Timestamp(last_idx).tz_localize(None) if last_idx.tz is None else last_idx.tz_convert(None)
-        else:
-            self._cur_minute = None
 
-    # ---------- Snapshot to 1m bars ----------
+        # Start fresh on first live tick
+        self._cur_minute = None
+        self._cur_open = self._cur_high = self._cur_low = self._cur_close = None
+
     def _safe_price(self, x) -> Optional[float]:
-        if x is None:
-            return None
-        if isinstance(x, float) and math.isnan(x):
-            return None
+        if x is None: return None
+        if isinstance(x, float) and math.isnan(x): return None
         return float(x)
 
     def _snapshot_price(self) -> Optional[float]:
@@ -152,28 +149,42 @@ class UnifiedTradingBot:
                 price = ask
         return price
 
-    def update_with_snapshot(self, wait_until_change: bool = False) -> bool:
+    def update_with_snapshot(self, wait_until_change: bool = False) -> Tuple[bool, bool]:
+        """
+        Returns (did_update, bar_closed).
+        did_update -> session_df mutated
+        bar_closed -> a minute bar was closed and a new one started
+        """
         ib = self.conn.connect()
         eps = float(self.cfg.price_epsilon or 0.0)
 
         def changed(new_p: Optional[float], last_p: Optional[float]) -> bool:
-            if new_p is None:
-                return False
-            if last_p is None:
-                return True
+            if new_p is None: return False
+            if last_p is None: return True
             return abs(new_p - last_p) > eps
 
         while True:
             p = self._snapshot_price()
+
+            tz = getattr(self.session_df.index, "tz", None) if self.session_df is not None else None
+            now_minute = pd.Timestamp.now(tz=tz).floor("min")
+
             if changed(p, self._last_price):
                 self._last_price = p
-                self._update_ohlc_with_price(p)
-                return True
-            if not wait_until_change:
-                return False
-            ib.sleep(1.0)
+                bar_closed = self._update_ohlc_with_price(p)
+                return True, bar_closed
 
-    
+            # No price change: still roll minute on boundary so bars close
+            if self._cur_minute is None or now_minute > self._cur_minute:
+                seed = p if p is not None else self._last_price
+                if seed is not None:
+                    bar_closed = self._update_ohlc_with_price(seed)
+                    return True, bar_closed
+
+            if not wait_until_change:
+                return False, False
+
+            ib.sleep(1.0)    
 
     def _update_ohlc_with_price(self, price: float) -> bool:
         """
@@ -181,7 +192,7 @@ class UnifiedTradingBot:
         Returns True if a bar was closed (i.e., a new minute started).
         """
         tz = getattr(self.session_df.index, "tz", None) if self.session_df is not None else None
-        now = pd.Timestamp.now(tz=tz).floor("T")  # minute key
+        now = pd.Timestamp.now(tz=tz).floor("min")  # minute key
         bar_closed = False
 
         if self._cur_minute is None:
@@ -225,6 +236,21 @@ class UnifiedTradingBot:
         self.session_df.sort_index(inplace=True)
 
     # ---------- Trading helpers ----------
+    def _round_to_tick(self, px: float) -> float:
+        tick = self.stock.get_min_tick()
+        # Round to nearest valid multiple
+        steps = round(px / tick)
+        return round(steps * tick, 6)
+
+    def _has_active_order(self) -> bool:
+        ib = self.conn.connect()
+        for tr in ib.openTrades():
+            if tr.contract.conId == self.stock.contract.conId:
+                st = (tr.orderStatus.status or "").lower()
+                if st in ("presubmitted", "submitted", "pendingsubmit"):
+                    return True
+        return False
+
     def get_position(self) -> int:
         ib = self.conn.connect()
         pos = 0
@@ -237,71 +263,64 @@ class UnifiedTradingBot:
     def place_trade(self, side: Literal["BUY", "SELL"], qty: int, reason: str = "") -> None:
         if qty <= 0:
             return
+
+        # Avoid spamming new orders if one is already working
+        if self._has_active_order():
+            print("Open order exists for this contract; skipping new order.")
+            return
+
         if self.cfg.use_limit_orders:
             t = self.stock.get_ticker()
             ref = (t.bid if side == "BUY" else t.ask)
             if ref is None:
-                ref = t.last or 0
+                ref = t.last or 0.0
             px = float(ref + self.cfg.limit_offset) if side == "BUY" else float(ref - self.cfg.limit_offset)
-            trade = (
-                self.trader.buy(qty, order_type="LMT", limit_price=px,
-                                tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                                account=self.cfg.account, wait=self.cfg.wait_for_fills)
-                if side == "BUY" else
-                self.trader.sell(qty, order_type="LMT", limit_price=px,
-                                 tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                                 account=self.cfg.account, wait=self.cfg.wait_for_fills)
-            )
+            px = self._round_to_tick(px)
+            if side == "BUY":
+                trade = self.trader.buy(
+                    qty, order_type="LMT", limit_price=px,
+                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                    account=self.cfg.account, wait=self.cfg.wait_for_fills
+                )
+            else:
+                trade = self.trader.sell(
+                    qty, order_type="LMT", limit_price=px,
+                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                    account=self.cfg.account, wait=self.cfg.wait_for_fills
+                )
         else:
-            trade = (
-                self.trader.buy(qty, order_type="MKT",
-                                tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                                account=self.cfg.account, wait=self.cfg.wait_for_fills)
-                if side == "BUY" else
-                self.trader.sell(qty, order_type="MKT",
-                                 tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
-                                 account=self.cfg.account, wait=self.cfg.wait_for_fills)
-            )
-        print(f"Placed {side} x{qty} ({reason}):", TwsTrader.trade_summary(trade))
+            if side == "BUY":
+                trade = self.trader.buy(
+                    qty, order_type="MKT",
+                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                    account=self.cfg.account, wait=self.cfg.wait_for_fills
+                )
+            else:
+                trade = self.trader.sell(
+                    qty, order_type="MKT",
+                    tif=self.cfg.tif, outsideRTH=self.cfg.outsideRTH,
+                    account=self.cfg.account, wait=self.cfg.wait_for_fills
+                )
 
     # ---------- Orchestration ----------
     def run_loop(self):
-        """
-        Poll every second; only act when the price changes.
-        Strategy is evaluated at each bar close (default) to match TradingView behavior.
-        """
         self.ensure_initialized()
         ib = self.conn.connect()
         print("Starting bot loop (1s polling; acting on price changes, strategy on bar close). Ctrl+C to stop.")
 
         try:
             while True:
-                changed = self.update_with_snapshot(wait_until_change=True)
-                if not changed:
+                did_update, bar_closed = self.update_with_snapshot(wait_until_change=True)
+                if not did_update:
                     ib.sleep(1.0)
                     continue
 
-                # Evaluate only on bar close (or on every tick if evaluate_on_close=False)
-                bar_closed = True  # update_with_snapshot already updated; find if minute changed:
-                # Determine if the last update started a NEW minute (previous bar closed)
-                # We can check if there are duplicate minute rows; simpler: when _cur_close == _cur_open after update, a new bar started.
-                # But we stored the "bar_closed" in _update_ohlc_with_price; to keep it simple, re-run strategy only when the minute changed.
-                # For accuracy, we’ll re-check: if the most recent index equals _cur_minute, do nothing. The previous call already handled reinsert.
-                # => We'll run on bar close when the previous minute finished i.e., whenever _cur_close == _cur_open and session_df has the new minute plus the previous one.
-                # To keep this concise, respect config flag:
-                if self.cfg.evaluate_on_close:
-                    # Run only when a NEW row was added in the last tick (minute boundary).
-                    # We check whether last minute has at least two rows and the last row's time != the previous row's time.
-                    if self.session_df is None or len(self.session_df) < 2:
-                        continue
-                    # If last two indices are different minutes, bar_closed just happened.
-                    last_idx = self.session_df.index[-1]
-                    prev_idx = self.session_df.index[-2]
-                    bar_closed = (last_idx != prev_idx)  # always True, but guards stale states
-                    if not bar_closed:
-                        continue
+                # Log minimally so you can see progress
+                print(f"[{pd.Timestamp.now():%H:%M:%S}] Bar {'closed' if bar_closed else 'updated'}. Last price={self._last_price}")
 
-                # Get signal and act
+                if self.cfg.evaluate_on_close and not bar_closed:
+                    continue
+
                 signal: StrategySignal = self.strategy.on_bar(self.session_df)
                 if signal.action == "HOLD":
                     continue
@@ -310,15 +329,13 @@ class UnifiedTradingBot:
                 qty = self.cfg.quantity
 
                 if signal.is_take_profit and self.cfg.tp_exit_all:
-                    qty = abs(pos) if abs(pos) > 0 else qty  # close full position if any
+                    qty = abs(pos) if abs(pos) > 0 else qty
 
-                # Skip redundant entries
                 if signal.action == "BUY" and pos > 0 and not signal.is_take_profit:
                     continue
                 if signal.action == "SELL" and pos < 0 and not signal.is_take_profit:
                     continue
 
-                # Basic risk cap
                 if signal.action == "BUY" and pos + qty > self.cfg.max_position:
                     print("Risk cap reached. Skipping BUY.")
                     continue
@@ -326,11 +343,9 @@ class UnifiedTradingBot:
                     print("Risk cap reached. Skipping SELL.")
                     continue
 
-                # If TP but flat, ignore
                 if signal.is_take_profit and pos == 0:
                     continue
 
-                # On TP, trade opposite the existing position size (if tp_exit_all=True)
                 if signal.is_take_profit and self.cfg.tp_exit_all and abs(pos) > 0:
                     qty = abs(pos)
 
