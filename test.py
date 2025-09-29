@@ -28,39 +28,49 @@ def tws_trade():
         trade2 = trader.sell(10, order_type='LMT', limit_price=limit_px, wait=False)
         print("SELL placed (not waiting):", trader.trade_summary(trade2))
 
-def live_graph():
+def live_graph_with_tws():
+    from yfinance_wrapper.stock import FinanceStock
     from ui.graph import LiveGraph
     from ui.yfinance_update_loop import YFinanceChartUpdater
+    from tws_wrapper.connection import TwsConnection
+    from tws_wrapper.stock import TwsStock
+    from ui.tws_update_loop import TwsPriceUpdateLoop
 
-    # 1) Fetch initial dataset for the chart
+    # 1) Chart + initial data
     finance = FinanceStock("RHM.DE")
     df_init = finance.get_accurate_max_historical_data()
-    if df_init is None or df_init.empty:
-        raise SystemExit("No data for RHM.DE")
-
-    # 2) Create the passive chart view
     view = LiveGraph(title="RHM.DE — yfinance", initial_df=df_init)
     view.show(block=False)
 
-    # 3) Start the yfinance updater (aligned to minute boundaries)
-    updater = YFinanceChartUpdater(
+    # 2) IB connect + subscription on MAIN THREAD
+    conn = TwsConnection()
+    ib = conn.connect()  # owns the ib_insync loop on main thread
+    # If you only have delayed data, you can force: ib.reqMarketDataType(3)
+
+    ib_stock = TwsStock(connection=conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
+    tws_loop = TwsPriceUpdateLoop(stock=ib_stock, poll_secs=1.0, force_print_secs=30.0, verbose=True)
+    tws_loop.prepare()  # connects + subscribes on main thread
+    tws_loop.start()    # background printer thread (just reads Ticker fields)
+
+    # 3) YF updater on main thread; pass ib.sleep to keep IB pumped
+    yf_updater = YFinanceChartUpdater(
         stock=finance,
         view=view,
         period="1d",
         interval="1m",
-        poll_secs=60,          # 60s for 1m bars
-        persist_csv_every=1,  # every 30 updates
+        poll_secs=60,
+        persist_csv_every=10,
         align_to_period=True,
         verbose=True,
+        during_wait=lambda dt: ib.sleep(dt),  # <-- critical: pumps IB loop
     )
 
-    # 4) Show chart; updater runs in background thread
     try:
-        updater.run_forever_in_main_thread()
+        yf_updater.run_forever_in_main_thread()
     finally:
-        updater.stop()
+        tws_loop.stop()
 
 if __name__ == "__main__":
     #tws_stock_stream()
     #tws_trade()
-    live_graph()
+    live_graph_with_tws()

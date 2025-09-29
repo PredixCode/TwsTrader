@@ -1,3 +1,4 @@
+# ui/yfinance_update_loop.py
 import time
 import threading
 import traceback
@@ -12,15 +13,11 @@ class YFinanceChartUpdater:
     """
     Periodically fetches yfinance data and pushes deltas into a LiveGraph.
 
-    Two modes:
-      - Threaded: start()/stop() manage a background thread (may stall if UI hogs GIL).
-      - Main-thread pump: call run_forever_in_main_thread() after view.show(block=False).
-
-    Features:
-      - Immediate first fetch
-      - Optional alignment to time boundaries
-      - Exponential backoff on errors
-      - Verbose logs
+    - Immediate first fetch
+    - Optional alignment
+    - Verbose logs
+    - Optional during_wait(dt) callback called repeatedly while waiting;
+      pass ib.sleep to keep ib_insync event loop pumped.
     """
 
     def __init__(
@@ -37,6 +34,7 @@ class YFinanceChartUpdater:
         on_error: Optional[Callable[[BaseException], None]] = None,
         daemon: bool = True,
         verbose: bool = True,
+        during_wait: Optional[Callable[[float], None]] = None,  # NEW: e.g., lambda dt: ib.sleep(dt)
     ) -> None:
         self.stock = stock
         self.view = view
@@ -49,6 +47,7 @@ class YFinanceChartUpdater:
         self.on_update = on_update
         self.on_error = on_error
         self.verbose = verbose
+        self.during_wait = during_wait  # NEW
 
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -56,7 +55,7 @@ class YFinanceChartUpdater:
         self._updates = 0
         self._daemon = daemon
 
-    # ---------- Threaded mode ----------
+    # ---------- Threaded mode (unchanged) ----------
 
     def start(self) -> None:
         if self.is_running():
@@ -77,40 +76,33 @@ class YFinanceChartUpdater:
 
     def _run_threaded(self) -> None:
         backoff = self.poll_secs
-
+        self._tick(first=True)
         while not self._stop.is_set():
             try:
                 delay = self._next_delay()
                 self._wait(delay)
                 if self._stop.is_set():
                     break
-
-                self._tick()
+                self._tick(first=False)
                 backoff = self.poll_secs
-
             except Exception as e:
                 self._handle_error(e)
                 backoff = min(backoff * 2, max(5 * self.poll_secs, 300))
                 self._wait(backoff)
 
-    # ---------- Main-thread pump mode ----------
+    # ---------- Main-thread pump mode (unchanged API) ----------
 
     def run_forever_in_main_thread(self) -> None:
-        """
-        Call this on the main thread AFTER showing the chart with block=False.
-        This avoids any UI-thread/GIL starvation problems.
-        """
         backoff = self.poll_secs
-
+        self._tick(first=True)
         try:
             while not self._stop.is_set():
                 delay = self._next_delay()
-                self._wait(delay)  # uses Event.wait, responsive to stop
+                self._wait(delay)  # will call during_wait in small slices if provided
                 if self._stop.is_set():
                     break
-
                 try:
-                    self._tick()
+                    self._tick(first=False)
                     backoff = self.poll_secs
                 except Exception as e:
                     self._handle_error(e)
@@ -122,7 +114,7 @@ class YFinanceChartUpdater:
 
     # ---------- Shared internals ----------
 
-    def _tick(self) -> None:
+    def _tick(self, *, first: bool) -> None:
         t0 = time.time()
         try:
             with self._fetch_lock:
@@ -130,14 +122,13 @@ class YFinanceChartUpdater:
 
             if recent_df is None or recent_df.empty:
                 if self.verbose:
-                    print(f"[YF-Updater] No data returned.")
+                    print(f"[YF-Updater] No data returned (first={first}).")
                 return
 
             recent_df = recent_df.sort_index()
 
             delta_count, merged_count = self._compute_delta_sizes(self.view.dataframe, recent_df)
 
-            # Push to chart
             self.view.apply_delta_df(recent_df)
             self.view.scroll_to_latest()
 
@@ -151,7 +142,7 @@ class YFinanceChartUpdater:
 
             t1 = time.time()
             if self.verbose:
-                print(f"[YF-Updater] tick "
+                print(f"[YF-Updater] tick (first={first}) "
                       f"delta={delta_count}, merged_len={merged_count}, "
                       f"elapsed={t1 - t0:.2f}s")
 
@@ -192,9 +183,32 @@ class YFinanceChartUpdater:
         return self._secs_to_next_multiple(self.poll_secs)
 
     def _wait(self, seconds: float) -> None:
+        """
+        Wait for `seconds`, but if during_wait is provided, break into small slices
+        and call during_wait(dt) repeatedly so other event loops (e.g., ib_insync)
+        can be pumped from the main thread.
+        """
         if seconds <= 0:
             return
-        self._stop.wait(timeout=float(seconds))
+
+        if self.during_wait is None:
+            self._stop.wait(timeout=float(seconds))
+            return
+
+        deadline = time.time() + float(seconds)
+        while not self._stop.is_set():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            dt = min(0.1, remaining)  # 100ms slices
+            try:
+                self.during_wait(dt)
+            except Exception as e:
+                # Don't crash on pump errors; just log
+                if self.verbose:
+                    print(f"[YF-Updater] during_wait error: {e!r}")
+            # Also respect stop quickly
+            self._stop.wait(timeout=0.0)
 
     def _handle_error(self, e: BaseException) -> None:
         if self.on_error:
