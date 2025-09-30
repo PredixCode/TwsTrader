@@ -209,7 +209,7 @@ class TwsCache:
         end_dt_utc: Optional[pd.Timestamp],
         duration_str: str,
         bar_size: str,
-        useRTH: bool = True,
+        useRTH: bool = False,
         whatToShow: str = "TRADES",
     ) -> pd.DataFrame:
         bars = ib.reqHistoricalData(
@@ -235,7 +235,7 @@ class TwsCache:
         contract: Contract,
         interval: str,
         total_days: int,
-        useRTH: bool = True,
+        useRTH: bool = False,
         whatToShow: str = "TRADES",
         chunk_days: int = 10,
         pause_sec: float = 0.3,
@@ -271,7 +271,7 @@ class TwsCache:
         contract: Contract,
         since_utc: pd.Timestamp,
         interval: str,
-        useRTH: bool = True,
+        useRTH: bool = False,
         whatToShow: str = "TRADES",
     ) -> pd.DataFrame:
         """
@@ -320,7 +320,7 @@ class TwsCache:
             contract,
             since_utc=start_ts,
             interval=interval,
-            useRTH=original_params.get("useRTH", True),
+            useRTH=original_params.get("useRTH", False),
             whatToShow=original_params.get("whatToShow", "TRADES"),
         )
         if df_new.empty:
@@ -381,7 +381,7 @@ class TwsCache:
         """
         period = params.get("period", "7d")
         interval = params.get("interval", "1m")
-        useRTH = params.get("useRTH", True)
+        useRTH = params.get("useRTH", False)
         whatToShow = params.get("whatToShow", "TRADES")
 
         bar_size = self._interval_to_ib_bar_size(interval)

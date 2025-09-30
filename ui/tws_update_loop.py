@@ -26,6 +26,7 @@ class IBHistoryChartUpdater:
         *,
         period: str = "max",
         interval: str = "1m",
+        whatToShow="TRADES", useRTH=True,
         poll_secs: float = 60.0,
         persist_csv_every: int = 1,
         align_to_period: bool = True,
@@ -38,6 +39,8 @@ class IBHistoryChartUpdater:
         self.view = view
         self.period = period
         self.interval = interval
+        self.whatToShow = whatToShow
+        self.useRTH = useRTH
         self.poll_secs = max(1.0, float(poll_secs))
         self.persist_csv_every = max(0, int(persist_csv_every))
         self.align_to_period = bool(align_to_period)
@@ -88,7 +91,7 @@ class IBHistoryChartUpdater:
 
     def _tick_once(self):
         self._loop_count += 1
-        df = self.stock.get_historical_data(period=self.period, interval=self.interval)
+        df = self.stock.get_historical_data(period=self.period, interval=self.interval, whatToShow=self.whatToShow, useRTH=self.useRTH)
         if df is None or df.empty:
             self._log("No data returned.")
             return
@@ -113,7 +116,7 @@ class IBHistoryChartUpdater:
         self.view.apply_delta_df(delta)
 
         if self.persist_csv_every and (self._loop_count % self.persist_csv_every == 0):
-            self.stock.last_fetch_to_csv()
+            self.stock.last_fetch_to_csv(df)
 
         if self.verbose:
             last = ohlcv.index[-1]

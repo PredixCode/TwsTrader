@@ -81,6 +81,12 @@ def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0)
 
     ib_stock = TwsStock(connection=conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS", market_data_type=3)
     ib_stock.get_ticker()  # subscribe once on main thread
+    c = ib_stock.qualify()
+    details = ib.reqContractDetails(c)[0]
+    print(f"Contract details of {ib_stock.symbol}")
+    print("timeZone:", details.timeZoneId)
+    print("tradingHours:", details.tradingHours)
+    print("liquidHours:", details.liquidHours)
 
     # 2) Choose data source + initial history
     yf_stock = YFinanceStock("RHM.DE")  # used for name and YF mode
@@ -88,7 +94,6 @@ def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0)
     if source == "tws":
         # IB history (minute bars up to ~29/30d); uses TwsFetchCache
         df_init = ib_stock.get_accurate_max_historical_data()
-        
         title = f"IB - {stock_name}"
     elif source == "yfinance":
         # YF accurate max (5m→2m→1m merge); YF cache applies
@@ -134,6 +139,8 @@ def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0)
                 view=hub_view,
                 period="1d",
                 interval="1m",
+                whatToShow="MIDPOINT",
+                useRTH=False,
                 poll_secs=60,
                 persist_csv_every=1,
                 align_to_period=True,

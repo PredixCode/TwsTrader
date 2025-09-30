@@ -169,7 +169,7 @@ class TwsStock:
         self,
         period: str = "7d",
         interval: str = "1m",
-        useRTH: bool = True,
+        useRTH: bool = False,
         whatToShow: str = "TRADES",
     ) -> pd.DataFrame:
         """
@@ -202,7 +202,7 @@ class TwsStock:
         print(f"[TwsStock] --- Retrieving accurate market data ({self.symbol} - interval={intervals}) ---")
         frames: List[pd.DataFrame] = []
         for interval in intervals:
-            df = self.get_historical_data(period="max", interval=interval, useRTH=True, whatToShow="TRADES")
+            df = self.get_historical_data(period="max", interval=interval)
             if not df.empty:
                 frames.append(df)
 
