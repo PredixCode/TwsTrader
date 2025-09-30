@@ -171,12 +171,6 @@ class TwsProvisionalCandleUpdater:
         self._last_pushed_close: Optional[float] = None
         self._last_log_ts: float = 0.0
 
-        # tz for chart index
-        try:
-            self._tz = getattr(self.view.dataframe.index, "tz", None)
-        except Exception:
-            self._tz = None
-
         # tick size for epsilon
         try:
             self._min_tick = float(self.stock.get_min_tick())
@@ -229,7 +223,7 @@ class TwsProvisionalCandleUpdater:
             self._maybe_log(snap, tag="no-price")
             return
 
-        now_minute = pd.Timestamp.now(tz=self._tz).floor("min")
+        now_minute = pd.Timestamp.utcnow().floor("min")
 
         # Minute rollover: destroy previous provisional bar, seed new current minute
         if self._minute_key is None or now_minute > self._minute_key:
@@ -385,15 +379,35 @@ class TwsProvisionalCandleUpdater:
         print(f"{ts_local} [TWS-Provisional:{tag}] {sym} bid={b}({bs}) ask={a}({as_}) last={l}({ls}) mid={m}")
 
     def _pick_price(self, snap: Dict[str, Any]) -> Optional[float]:
+        def pos(x) -> Optional[float]:
+            try:
+                xf = float(x)
+                if xf > 0 and xf == xf:  # positive and not NaN
+                    return xf
+            except Exception:
+                pass
+            return None
+
+        # Prefer mid if both bid/ask are positive
+        bid = pos(snap.get("bid"))
+        ask = pos(snap.get("ask"))
+        if bid is not None and ask is not None:
+            mid = (bid + ask) / 2.0
+            if mid > 0:
+                return mid
+
+        # Fall back through preferred keys but only accept positive numbers
         for k in self.price_pref:
-            v = self._safe_float(snap.get(k))
+            v = pos(snap.get(k))
             if v is not None:
                 return v
-        bid = self._safe_float(snap.get("bid"))
-        ask = self._safe_float(snap.get("ask"))
-        if bid is not None and ask is not None:
-            return (bid + ask) / 2.0
-        return bid or ask
+
+        # As a very last resort, try either side if positive
+        if bid is not None:
+            return bid
+        if ask is not None:
+            return ask
+        return None
 
     def _price_changed(self, a: Optional[float], b: Optional[float]) -> bool:
         if a is None or b is None:

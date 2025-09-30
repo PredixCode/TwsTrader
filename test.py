@@ -54,7 +54,7 @@ def timezone():
     print("Now UTC / Berlin        :", now_utc, "/", now_berlin)
     print("Delta (Berlin, minutes) :", (now_berlin - last_ts_berlin).total_seconds()/60.0)
 
-def live_graph_with_tws_provisional(source='tws'):
+def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0):
     from yfinance_wrapper.stock import YFinanceStock
     from ui.graph import LiveGraph
     from ui.yfinance_update_loop import YFinanceChartUpdater
@@ -79,24 +79,26 @@ def live_graph_with_tws_provisional(source='tws'):
     conn = TwsConnection()
     ib = conn.connect()
 
-    ib_stock = TwsStock(connection=conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
+    ib_stock = TwsStock(connection=conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS", market_data_type=3)
     ib_stock.get_ticker()  # subscribe once on main thread
 
     # 2) Choose data source + initial history
     yf_stock = YFinanceStock("RHM.DE")  # used for name and YF mode
+    stock_name = yf_stock.name.replace(" ","")
     if source == "tws":
         # IB history (minute bars up to ~29/30d); uses TwsFetchCache
-        df_init = ib_stock.get_historical_data(period="29d", interval="1m")
-        title = f"{yf_stock.name} — IB"
+        df_init = ib_stock.get_accurate_max_historical_data()
+        
+        title = f"IB - {stock_name}"
     elif source == "yfinance":
         # YF accurate max (5m→2m→1m merge); YF cache applies
         df_init = yf_stock.get_accurate_max_historical_data()
-        title = f"{yf_stock.name} — Yahoo"
+        title = f"Yahoo - {stock_name}"
     else:
         raise ValueError("source must be 'tws' or 'yfinance'.")
     
     # 3) Build hub + view + fanout
-    hub = MarketDataHub(initial_df=df_init)
+    hub = MarketDataHub(initial_df=df_init, display_offset_hours=tz_offset_hours)
     view = LiveGraph(title=title, initial_df=df_init)
     hub.subscribe_view(view)
     # Optional: function subscriber
@@ -112,7 +114,7 @@ def live_graph_with_tws_provisional(source='tws'):
     tws_candles = TwsProvisionalCandleUpdater(
         stock=ib_stock,
         view=hub_view,                     # fanout writes to hub + chart
-        poll_secs=5.0,
+        poll_secs=1.0,
         price_pref=("mid", "last", "bid", "ask"),
         min_change_ticks=0.0,
         verbose=True,
