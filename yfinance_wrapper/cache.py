@@ -8,7 +8,7 @@ import pandas as pd
 import yfinance as yf
 
 
-class FetchCache:
+class YFInanceCache:
     """
     Persistent on-disk caching with a simple TTL and safe incremental updates
     that preserve older cached history on refresh.

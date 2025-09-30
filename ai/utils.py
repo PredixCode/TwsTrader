@@ -6,7 +6,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 
-from yfinance_wrapper.stock import FinanceStock
+from yfinance_wrapper.stock import YFinanceStock
 
 
 
@@ -32,7 +32,7 @@ def set_random_seed(seed: int = 42):
 
 
 def fetch_price_df(ticker: str) -> pd.DataFrame:
-    stock = FinanceStock(ticker)
+    stock = YFinanceStock(ticker)
     df = stock.get_accurate_max_historical_data()
     if df.empty:
         return df

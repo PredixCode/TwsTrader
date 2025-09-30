@@ -5,7 +5,7 @@ import traceback
 from typing import Optional, Callable, Tuple
 import pandas as pd
 
-from yfinance_wrapper.stock import FinanceStock
+from yfinance_wrapper.stock import YFinanceStock
 from ui.graph import LiveGraph
 
 
@@ -22,7 +22,7 @@ class YFinanceChartUpdater:
 
     def __init__(
         self,
-        stock: FinanceStock,
+        stock: YFinanceStock,
         view: LiveGraph,
         *,
         period: str = "1d",

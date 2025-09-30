@@ -1,9 +1,8 @@
 - Build live chart:
-    - Make chart UI from historic market data (DONE)
-    - Auto-refresh with live prices (like TradingView)
-    - Buy/Sell signal appears on chart after TWS trade
+    - Deimplement yfinance
+    - Connect trading bot to live chart
     - Use predictions from AI in chart
 
 - AI:
     - Train generalized or Rheinmetall model
-    - Use predictions from AI in unified/strategies
+    - Use predictions from AI in trading bot strategies

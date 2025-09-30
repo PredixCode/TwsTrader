@@ -5,15 +5,15 @@ import yfinance as yf
 import pandas as pd
 
 
-from yfinance_wrapper.fetch_cache import FetchCache
+from yfinance_wrapper.cache import YFInanceCache
 
 
 
-class FinanceStock:
-    def __init__(self, ticker_symbol: str, cache: Optional[FetchCache] = None):
+class YFinanceStock:
+    def __init__(self, ticker_symbol: str, cache: Optional[YFInanceCache] = None):
         self.ticker_symbol = ticker_symbol
         self.ticker = yf.Ticker(self.ticker_symbol)
-        self.cache = cache or FetchCache()
+        self.cache = cache or YFInanceCache()
         self.last_fetch: Optional[pd.DataFrame] = None
 
     @property

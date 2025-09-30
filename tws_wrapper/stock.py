@@ -1,34 +1,52 @@
 # tws_wrapper/stock.py
 
+import os
 import math
 import time
+from enum import IntEnum
 from datetime import datetime
+from typing import Optional, List
+
+import pandas as pd
 from ib_insync import Ticker, Contract, ContractDetails
 from ib_insync import Stock as IBStock
-from tws_wrapper.connection import TwsConnection
-from enum import IntEnum
 
+from tws_wrapper.cache import TwsCache
+from tws_wrapper.connection import TwsConnection
+
+
+# --------------------------
+# Market Data Types
+# --------------------------
 class MarketType(IntEnum):
     LIVE = 1
     DELAYED = 3
     FROZEN = 2
     DELAYED_FROZEN = 4
+
     @classmethod
     def names(cls): return [e.name for e in cls]
+
     @classmethod
     def values(cls): return [e.value for e in cls]
+
     @classmethod
     def entries(cls): return [(e.name, e.value) for e in cls]
 
+
+# --------------------------
+# TwsStock wrapper
+# --------------------------
 class TwsStock:
     def __init__(
         self,
         connection: TwsConnection,
         symbol: str,
-        exchange: str = 'SMART',
-        currency: str = 'EUR',
-        primaryExchange: str|None = None,
-        market_data_type: int|None = None
+        exchange: str = "SMART",
+        currency: str = "EUR",
+        primaryExchange: str | None = None,
+        market_data_type: int | None = None,
+        cache: Optional[TwsCache] = None,
     ):
         self.symbol = symbol
         self.conn = connection
@@ -37,16 +55,18 @@ class TwsStock:
         else:
             self.contract = IBStock(symbol, exchange, currency)
         self._qualified = False
-        self.market_data_type: int|None = market_data_type
-        self._ticker: Ticker|None = None
-        self._min_tick: float|None = None  # <-- cache
+        self.market_data_type: int | None = market_data_type
+        self._ticker: Ticker | None = None
+        self._min_tick: float | None = None  # cache
+        self.cache = cache or TwsCache()
+        self.last_fetch: Optional[pd.DataFrame] = None
 
+    # --------- Live/streaming (unchanged) ---------
     def _subscribe(self, md_type: int) -> Ticker:
         ib = self.conn.connect()
         self.qualify()
         ib.reqMarketDataType(md_type)
-        # Do NOT call cancelMktData here; it causes noisy "No reqId" logging.
-        t = ib.reqMktData(self.contract, '', snapshot=False, regulatorySnapshot=False)
+        t = ib.reqMktData(self.contract, "", snapshot=False, regulatorySnapshot=False)
         ib.sleep(1.0)
         return t
 
@@ -66,21 +86,20 @@ class TwsStock:
             return self._min_tick
         ib = self.conn.connect()
         self.qualify()
-        cdetails: list[ContractDetails] = ib.reqContractDetails(self.contract)
+        cdetails: List[ContractDetails] = ib.reqContractDetails(self.contract)
         if not cdetails:
-            # Fall back to a conservative default; XETRA around €2000 often uses 0.5
             self._min_tick = 0.5
         else:
             self._min_tick = float(cdetails[0].minTick or 0.5)
         return self._min_tick
 
-    def get_ticker(self, market_data_type: int|None = None) -> Ticker:
+    def get_ticker(self, market_data_type: int | None = None) -> Ticker:
         def __is_valid(t: Ticker) -> bool:
             def ok(x):
                 return x is not None and not (isinstance(x, float) and math.isnan(x))
-            return ok(getattr(t, 'last', None)) or ok(getattr(t, 'bid', None)) or ok(getattr(t, 'ask', None))
+            return ok(getattr(t, "last", None)) or ok(getattr(t, "bid", None)) or ok(getattr(t, "ask", None))
 
-        def __find__market_for_ticker() -> Ticker|None:
+        def __find_market_for_ticker() -> Ticker | None:
             print("Discovering available market data types (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen) to fetch data.")
             for md_name, md_value in MarketType.entries():
                 ticker = self._subscribe(md_value)
@@ -108,19 +127,27 @@ class TwsStock:
                 self.market_data_type = market_data_type
                 return t
 
-        ticker = __find__market_for_ticker()
+        ticker = __find_market_for_ticker()
         if ticker is None:
             raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock.")
         return ticker
 
     def snapshot(self) -> dict:
         t = self.get_ticker()
-        bid = t.bid if t.bid is not None else float('nan')
-        ask = t.ask if t.ask is not None else float('nan')
-        last = t.last if t.last is not None else float('nan')
-        mid = (bid + ask)/2 if (not math.isnan(bid) and not math.isnan(ask)) else float('nan')
-        return dict(symbol=self.symbol, bid=bid, ask=ask, last=last, mid=mid,
-                    bidSize=t.bidSize or 0, askSize=t.askSize or 0, lastSize=t.lastSize or 0)
+        bid = t.bid if t.bid is not None else float("nan")
+        ask = t.ask if t.ask is not None else float("nan")
+        last = t.last if t.last is not None else float("nan")
+        mid = (bid + ask) / 2 if (not math.isnan(bid) and not math.isnan(ask)) else float("nan")
+        return dict(
+            symbol=self.symbol,
+            bid=bid,
+            ask=ask,
+            last=last,
+            mid=mid,
+            bidSize=t.bidSize or 0,
+            askSize=t.askSize or 0,
+            lastSize=t.lastSize or 0,
+        )
 
     def stream_price(self, duration_sec: int = 60) -> None:
         print(f"Streaming {self.symbol} for {duration_sec}s (marketDataType={self.market_data_type}).")
@@ -134,3 +161,89 @@ class TwsStock:
                 print(f"{ts_local}: {snapshot}")
                 last_printed = snapshot
         print(f"Done streaming ({duration_sec}s).")
+
+    # --------- Historical ---------
+    def get_historical_data(
+        self,
+        period: str = "7d",
+        interval: str = "1m",
+        useRTH: bool = True,
+        whatToShow: str = "TRADES",
+    ) -> pd.DataFrame:
+        """
+        Mirror FinanceStock.get_historical_data, but fetch via IB and cache results.
+        Returns a DataFrame with columns: Open, High, Low, Close, Volume, Dividends, Stock Splits
+        Index is UTC-naive DatetimeIndex (sorted, deduped).
+        """
+        ib = self.conn.connect()
+        self.qualify()
+
+        df = self.cache.fetch(
+            ib,
+            self.contract,
+            self.symbol,
+            period=period,
+            interval=interval,
+            useRTH=useRTH,
+            whatToShow=whatToShow,
+        )
+        self.last_fetch = df.copy()
+        return df
+
+    def get_accurate_max_historical_data(self) -> pd.DataFrame:
+        """
+        Fetch 5m, 2m, then 1m with period='max' and merge, so higher resolution
+        overwrites overlapping coarse bars (exactly like the yfinance wrapper).
+        """
+        
+        intervals: List[str] = ["5m", "2m", "1m"]
+        print(f"[TwsStock] --- Retrieving accurate market data ({self.symbol} - interval={intervals}) ---")
+        frames: List[pd.DataFrame] = []
+        for interval in intervals:
+            df = self.get_historical_data(period="max", interval=interval, useRTH=True, whatToShow="TRADES")
+            if not df.empty:
+                frames.append(df)
+
+        if not frames:
+            self.last_fetch = pd.DataFrame()
+            return self.last_fetch
+
+        merged = self.__merge_historical_data(frames)
+        self.last_fetch = merged.copy()
+        return merged
+
+    def last_fetch_to_csv(self, last_fetch: Optional[pd.DataFrame] = None) -> Optional[str]:
+        if last_fetch is not None:
+            self.last_fetch = last_fetch
+
+        if self.last_fetch is None or self.last_fetch.empty:
+            print("Last fetch is empty or invalid. Nothing to save.")
+            return None
+
+        safe_filename = "".join([c for c in self.symbol if c.isalnum() or c.isspace()]).rstrip()
+        file_dir = os.path.dirname(os.path.realpath(__file__))
+        path = os.path.join(file_dir, "data", "csv")
+        os.makedirs(path, exist_ok=True)
+        filename = os.path.join(path, f"{safe_filename}.csv")
+
+        try:
+            df = self.last_fetch.copy()
+            df.index.name = "Datetime"
+            print(f"[TwsStock] Saving last fetch to: {filename}")
+            df.to_csv(filename)
+            return os.path.abspath(filename)
+        except Exception as e:
+            print(f"Error saving file: {e}")
+            return None
+
+    def __merge_historical_data(self, dataframes: List[pd.DataFrame]) -> pd.DataFrame:
+        combined_df = pd.concat(dataframes, axis=0)
+        combined_df.sort_index(inplace=True)
+        merged_df = combined_df[~combined_df.index.duplicated(keep="last")]
+        # Ensure standard columns/order for uniformity
+        std_cols = ["Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]
+        for c in std_cols:
+            if c not in merged_df.columns:
+                merged_df[c] = pd.NA
+        merged_df = merged_df[std_cols]
+        return merged_df

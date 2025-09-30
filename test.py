@@ -1,7 +1,7 @@
 import os
 import multiprocessing as mp
 
-from yfinance_wrapper.stock import FinanceStock
+from yfinance_wrapper.stock import YFinanceStock
 
 from  tws_wrapper.trader import TwsTrader
 from tws_wrapper.stock import TwsStock, TwsConnection
@@ -28,58 +28,120 @@ def tws_trade():
         trade2 = trader.sell(10, order_type='LMT', limit_price=limit_px, wait=False)
         print("SELL placed (not waiting):", trader.trade_summary(trade2))
 
-def live_graph_with_tws_provisional():
-    from yfinance_wrapper.stock import FinanceStock
+def tws_historical():
+    with TwsConnection() as conn:
+        feed = TwsStock(conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
+        feed.get_accurate_max_historical_data()
+        feed.last_fetch_to_csv()
+
+def timezone():
+    import pandas as pd, pytz, datetime as dt
+    finance = YFinanceStock("RHM.DE")
+    df = finance.get_historical_data(period="1d", interval="1m")  # as you already do
+    last_ts_naive = df.index.max()
+    utc = pytz.UTC
+    berlin = pytz.timezone("Europe/Berlin")
+
+    # Your cache made index UTC-naive – relocalize to UTC, then convert to Berlin
+    last_ts_utc_aware = pd.Timestamp(last_ts_naive).tz_localize("UTC")
+    last_ts_berlin = last_ts_utc_aware.tz_convert(berlin)
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+    now_berlin = now_utc.tz_convert(berlin)
+
+    print("Yahoo last bar UTC      :", last_ts_utc_aware)
+    print("Yahoo last bar Berlin   :", last_ts_berlin)
+    print("Now UTC / Berlin        :", now_utc, "/", now_berlin)
+    print("Delta (Berlin, minutes) :", (now_berlin - last_ts_berlin).total_seconds()/60.0)
+
+def live_graph_with_tws_provisional(source='tws'):
+    from yfinance_wrapper.stock import YFinanceStock
     from ui.graph import LiveGraph
     from ui.yfinance_update_loop import YFinanceChartUpdater
     from tws_wrapper.connection import TwsConnection
     from tws_wrapper.stock import TwsStock
-    from ui.tws_update_loop import TwsProvisionalCandleUpdater
+    from ui.tws_update_loop import TwsProvisionalCandleUpdater, IBHistoryChartUpdater
 
-    # 1) Chart + initial data
-    finance = FinanceStock("RHM.DE")
-    df_init = finance.get_accurate_max_historical_data()
-    view = LiveGraph(title="RHM.DE — yfinance", initial_df=df_init)
-    view.show(block=False)
+    """
+    source:
+    - 'tws'      -> IB-only history + TWS provisional current bar
+    - 'yfinance' -> Yahoo history/backfill + TWS provisional current bar
 
-    # 2) IB connect + subscribe on MAIN THREAD
+    Both modes:
+    - IB is connected on the main thread first.
+    - TwsProvisionalCandleUpdater runs in a background thread and updates ONLY the current minute;
+        on minute rollover it removes the provisional bar; the history updater (YF or IB) later
+        fills the closed minute with authoritative data.
+    """
+    # 1) IB connect + subscribe on MAIN THREAD
     conn = TwsConnection()
     ib = conn.connect()
-    # ib.reqMarketDataType(3)  # if you only have delayed data
+
     ib_stock = TwsStock(connection=conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
     ib_stock.get_ticker()  # subscribe once on main thread
 
-    # 3) Start provisional updater (background)
+    # 2) Choose data source + initial history
+    yf_stock = YFinanceStock("RHM.DE")  # used for name and YF mode
+    if source == "tws":
+        # IB history (minute bars up to ~29/30d); uses TwsFetchCache
+        df_init = ib_stock.get_historical_data(period="29d", interval="1m")
+        title = f"{yf_stock.name} — IB"
+    elif source == "yfinance":
+        # YF accurate max (5m→2m→1m merge); YF cache applies
+        df_init = yf_stock.get_accurate_max_historical_data()
+        title = f"{yf_stock.name} — Yahoo"
+    else:
+        raise ValueError("source must be 'tws' or 'yfinance'.")
+
+    view = LiveGraph(title=title, initial_df=df_init)
+    view.show(block=False)
+
+    # 3) Start TWS provisional current-minute updater (background)
     tws_candles = TwsProvisionalCandleUpdater(
         stock=ib_stock,
         view=view,
         poll_secs=5.0,
         price_pref=("mid", "last", "bid", "ask"),
-        min_change_ticks=0.0,   # or 1.0 to throttle small flickers
+        min_change_ticks=0.0,  # set 1.0 to throttle tiny changes
         verbose=True,
     )
     tws_candles.prepare()
     tws_candles.start()
 
-    # 4) YF updater on main thread, pumping IB during waits
-    yf_updater = YFinanceChartUpdater(
-        stock=finance,
-        view=view,
-        period="1d",
-        interval="1m",
-        poll_secs=60,
-        persist_csv_every=10,
-        align_to_period=True,
-        verbose=True,
-        during_wait=lambda dt: ib.sleep(dt),
-    )
-
+    # 4) Run the selected history updater on MAIN THREAD, pumping IB during waits
     try:
-        yf_updater.run_forever_in_main_thread()
+        if source == "yfinance":
+            yf_updater = YFinanceChartUpdater(
+                stock=yf_stock,
+                view=view,
+                period="1d",
+                interval="1m",
+                poll_secs=60,
+                persist_csv_every=1,
+                align_to_period=True,
+                verbose=True,
+                during_wait=lambda dt: ib.sleep(dt),  # pump IB while waiting
+            )
+            yf_updater.run_forever_in_main_thread()
+        else:
+            ib_updater = IBHistoryChartUpdater(
+                stock=ib_stock,
+                view=view,
+                period="max",
+                interval="1m",
+                poll_secs=60,
+                persist_csv_every=1,
+                align_to_period=True,
+                verbose=True,
+                during_wait=lambda dt: ib.sleep(dt),  # pump IB while waiting
+            )
+            ib_updater.run_forever_in_main_thread()
     finally:
         tws_candles.stop()
 
 if __name__ == "__main__":
     #tws_stock_stream()
     #tws_trade()
-    live_graph_with_tws_provisional()
+    #tws_historical()
+    #timezone()
+    live_graph_with_tws_provisional("tws")

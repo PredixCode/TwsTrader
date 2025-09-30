@@ -4,7 +4,7 @@ from typing import Optional, Literal, Tuple
 import pandas as pd
 import math
 
-from yfinance_wrapper.stock import FinanceStock
+from yfinance_wrapper.stock import YFinanceStock
 from tws_wrapper.stock import TwsStock
 from tws_wrapper.trader import TwsTrader
 from tws_wrapper.connection import TwsConnection
@@ -57,7 +57,7 @@ class UnifiedTradingBot:
         self.strategy = strategy
 
         # Yahoo Finance side
-        self.finance = FinanceStock(config.mapping.yf_symbol)
+        self.finance = YFinanceStock(config.mapping.yf_symbol)
 
         # IB side
         self.stock = TwsStock(
