@@ -1,5 +1,4 @@
 - Build live chart:
-    - Deimplement yfinance
     - Connect trading bot to live chart
     - Use predictions from AI in chart
 

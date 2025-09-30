@@ -3,8 +3,8 @@ from ib_insync import util
 util.logToConsole()
 
 from tws_wrapper.connection import TwsConnection
-from unified.bot import UnifiedTradingBot, BotConfig, SymbolMapping
-from unified.strategy.sfi_charlie import SfiCharlieStrategy, SfiCharlieConfig
+from core.bot import UnifiedTradingBot, BotConfig, SymbolMapping
+from core.strategy.sfi_charlie import SfiCharlieStrategy, SfiCharlieConfig
 
 if __name__ == "__main__":
     mapping = SymbolMapping(

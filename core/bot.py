@@ -9,7 +9,7 @@ from tws_wrapper.stock import TwsStock
 from tws_wrapper.trader import TwsTrader
 from tws_wrapper.connection import TwsConnection
 
-from unified.strategy.base import BaseStrategy, StrategySignal
+from core.strategy.base import BaseStrategy, StrategySignal
 
 
 @dataclass
