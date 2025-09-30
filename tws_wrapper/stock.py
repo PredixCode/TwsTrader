@@ -144,6 +144,8 @@ class TwsStock:
             ask=ask,
             last=last,
             mid=mid,
+            vol=t.volume or 0,
+            rtVolume=getattr(t, "rtVolume", None),
             bidSize=t.bidSize or 0,
             askSize=t.askSize or 0,
             lastSize=t.lastSize or 0,

@@ -22,7 +22,7 @@ class IBHistoryChartUpdater:
     def __init__(
         self,
         stock: TwsStock,
-        view: LiveGraph,
+        view: object,
         *,
         period: str = "max",
         interval: str = "1m",
@@ -135,7 +135,7 @@ class TwsProvisionalCandleUpdater:
     def __init__(
         self,
         stock: TwsStock,
-        view: LiveGraph,
+        view: object,
         *,
         poll_secs: float = 1,
         price_pref: Tuple[str, ...] = ("mid", "last", "bid", "ask"),
@@ -143,7 +143,7 @@ class TwsProvisionalCandleUpdater:
         verbose: bool = True,
         daemon: bool = True,
         log_every_secs: Optional[float] = 30.0,
-        on_drop_prev_minute: Optional[Callable[[LiveGraph, pd.Timestamp], None]] = None,
+        on_drop_prev_minute: Optional[Callable[[object, pd.Timestamp], None]] = None,
     ) -> None:
         self.stock = stock
         self.view = view
@@ -165,6 +165,7 @@ class TwsProvisionalCandleUpdater:
         self._h: Optional[float] = None
         self._l: Optional[float] = None
         self._c: Optional[float] = None
+        self._cum_vol_seed: Optional[float] = None  # cumulative day volume at minute start
 
         # Change detection
         self._last_pushed_close: Optional[float] = None
@@ -238,6 +239,10 @@ class TwsProvisionalCandleUpdater:
 
             self._minute_key = now_minute
             self._o = self._h = self._l = self._c = float(price)
+
+            # Seed cumulative volume at minute start; minute volume starts at 0
+            self._cum_vol_seed = self._cum_volume_from_snap(snap)
+            self._v = 0.0
             self._last_pushed_close = None
 
             self._push_bar(log_reason="seed")
@@ -251,6 +256,14 @@ class TwsProvisionalCandleUpdater:
             self._l = float(price); changed = True
         if self._c is None or self._price_changed(price, self._c):
             self._c = float(price); changed = True
+
+        # Recompute minute volume from cumulative
+        cur_cum = self._cum_volume_from_snap(snap)
+        if cur_cum is not None and self._cum_vol_seed is not None:
+            minute_vol = max(0.0, float(cur_cum) - float(self._cum_vol_seed))
+            if self._v is None or minute_vol != self._v:
+                self._v = minute_vol
+                changed = True
 
         if changed or force:
             self._push_bar(log_reason="update")
@@ -268,17 +281,18 @@ class TwsProvisionalCandleUpdater:
                 h=float(self._h),
                 l=float(self._l),
                 c=float(self._c),
+                v=float(self._v),
                 floor_to_minute=False
             )
             self._last_pushed_close = float(self._c)
             if self.verbose:
                 ts_local = datetime.now().strftime("%H:%M:%S")
                 print(f"{ts_local} [TWS-Provisional:{log_reason}] {self._minute_key} "
-                      f"O={self._o} H={self._h} L={self._l} C={self._c}")
+                      f"O={self._o} H={self._h} L={self._l} C={self._c} V={self._v}")
         except TypeError:
             # Minimal positional fallback if your signature differs
             try:
-                self.view.upsert_bar(self._minute_key, float(self._o), float(self._h), float(self._l), float(self._c))
+                self.view.upsert_bar(self._minute_key, float(self._o), float(self._h), float(self._l), float(self._c), float(self._v))
                 self._last_pushed_close = float(self._c)
             except Exception as e:
                 print(f"[TWS-Provisional] upsert fallback failed: {e!r}")
@@ -328,6 +342,26 @@ class TwsProvisionalCandleUpdater:
             print(f"[TWS-Provisional] WARN: Could not drop provisional bar {ts} (no supported method).")
         except Exception as e:
             print(f"[TWS-Provisional] drop_prev_minute error for {ts}: {e!r}")
+
+    def _cum_volume_from_snap(self, snap: Dict[str, Any]) -> Optional[float]:
+        """
+        Return cumulative day volume if available.
+        Prefer RTVolume totalVolume when present, else fall back to snapshot 'vol'.
+        IB RTVolume format: "price;size;time;totalVolume;VWAP;singleTrade"
+        """
+        rv = snap.get("rtVolume")
+        if rv:
+            try:
+                parts = str(rv).split(";")
+                if len(parts) >= 4:
+                    return float(parts[3])
+            except Exception:
+                pass
+        v = snap.get("vol")
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
 
     def _log_drop(self, ts: pd.Timestamp, *, source: str) -> None:
         if self.verbose:

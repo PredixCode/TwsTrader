@@ -9,7 +9,7 @@ from tws_wrapper.stock import TwsStock, TwsConnection
 
 # USAGE examples of wrappers and graphs
 def tws_stock_stream():
-    with TwsConnection() as conn:
+    with TwsConnection(port=7496) as conn:
         feed = TwsStock(conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
         feed.stream_price(duration_sec=60)
 
@@ -61,6 +61,8 @@ def live_graph_with_tws_provisional(source='tws'):
     from tws_wrapper.connection import TwsConnection
     from tws_wrapper.stock import TwsStock
     from ui.tws_update_loop import TwsProvisionalCandleUpdater, IBHistoryChartUpdater
+    from ui.adapter import HubViewAdapter
+    from core.market_data_hub import MarketDataHub
 
     """
     source:
@@ -92,28 +94,42 @@ def live_graph_with_tws_provisional(source='tws'):
         title = f"{yf_stock.name} — Yahoo"
     else:
         raise ValueError("source must be 'tws' or 'yfinance'.")
-
+    
+    # 3) Build hub + view + fanout
+    hub = MarketDataHub(initial_df=df_init)
     view = LiveGraph(title=title, initial_df=df_init)
-    view.show(block=False)
+    hub.subscribe_view(view)
+    # Optional: function subscriber
+    # hub.subscribe(lambda delta, full: print("delta:", len(delta), "full:", len(full)))
 
-    # 3) Start TWS provisional current-minute updater (background)
+    # Use adapter so all updaters write to the hub
+    hub_view = HubViewAdapter(hub)
+
+    # 4) Start TWS provisional current-minute updater (background)
+    def _on_drop_prev_minute(_view, ts):
+        hub.drop_bar(ts)
+
     tws_candles = TwsProvisionalCandleUpdater(
         stock=ib_stock,
-        view=view,
+        view=hub_view,                     # fanout writes to hub + chart
         poll_secs=5.0,
         price_pref=("mid", "last", "bid", "ask"),
-        min_change_ticks=0.0,  # set 1.0 to throttle tiny changes
+        min_change_ticks=0.0,
         verbose=True,
+        on_drop_prev_minute=_on_drop_prev_minute
     )
     tws_candles.prepare()
     tws_candles.start()
+
+    # Show chart
+    view.show(block=False)
 
     # 4) Run the selected history updater on MAIN THREAD, pumping IB during waits
     try:
         if source == "yfinance":
             yf_updater = YFinanceChartUpdater(
                 stock=yf_stock,
-                view=view,
+                view=hub_view,
                 period="1d",
                 interval="1m",
                 poll_secs=60,
@@ -126,7 +142,7 @@ def live_graph_with_tws_provisional(source='tws'):
         else:
             ib_updater = IBHistoryChartUpdater(
                 stock=ib_stock,
-                view=view,
+                view=hub_view,
                 period="max",
                 interval="1m",
                 poll_secs=60,
