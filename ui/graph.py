@@ -55,7 +55,7 @@ class LiveGraph:
 
             # Re-apply markers after resetting data
             self._apply_markers_locked()
-            self._fit_or_scroll_to_latest_locked()
+            # IMPORTANT: no auto fit or scroll here anymore
 
     def apply_delta_df(self, delta_df: pd.DataFrame) -> None:
         """
@@ -77,7 +77,6 @@ class LiveGraph:
 
             # Identify truly changed/new rows
             last_idx = self.dataframe.index.max() if len(self.dataframe) else None
-            # If we have a last index, take rows >= last_idx (could include updates to last bar)
             if last_idx is not None and last_idx in merged.index:
                 changed = merged.loc[merged.index >= last_idx]
             else:
@@ -103,9 +102,8 @@ class LiveGraph:
                 elif self.chart and hasattr(self.chart, "set"):
                     self.chart.set(self.dataframe)
 
-            # Re-apply markers and keep view at the right edge
+            # Re-apply markers; DO NOT change viewport automatically
             self._apply_markers_locked()
-            self._scroll_to_latest_locked()
 
     def upsert_bar(
         self,
@@ -162,8 +160,7 @@ class LiveGraph:
                 elif self.chart and hasattr(self.chart, "set"):
                     self.chart.set(self.dataframe)
 
-            # Keep view pinned to the latest candle
-            self._scroll_to_latest_locked()
+            # DO NOT auto-jump to latest
 
     def add_trade_label(
         self,
@@ -181,7 +178,7 @@ class LiveGraph:
     ) -> None:
         """
         Visible, price-anchored label at trade time:
-          - optional marker (hover text only)
+          - optional marker (hover-only)
           - horizontal line at price with label
           - short segment starting at the candle time
         """
@@ -253,6 +250,7 @@ class LiveGraph:
                     pass
 
     def scroll_to_latest(self) -> None:
+        # Manual-only method; call this from UI/user action if you want to jump right.
         with self._chart_lock:
             self._scroll_to_latest_locked()
 
@@ -273,10 +271,10 @@ class LiveGraph:
                     "fixLeftEdge": False,
                     "fixRightEdge": False,
                     "lockVisibleTimeRangeOnResize": False,
-                    "shiftVisibleRangeOnNewBar": False,
+                    "shiftVisibleRangeOnNewBar": False,  # prevents auto-shift on new bars
                 },
                 "rightPriceScale": {
-                    "autoScale": False,
+                    "autoScale": False,  # prevents auto price rescale
                     "scaleMargins": {"top": 0.05, "bottom": 0.05},
                     "entireTextOnly": False,
                     "borderVisible": True
@@ -397,15 +395,13 @@ class LiveGraph:
 
     def _fit_or_scroll_to_latest_locked(self) -> None:
         """
-        Try fit_content once (initial), otherwise scroll to latest.
+        No-op: previously fit content or scrolled to latest.
+        Left in place for compatibility but intentionally does nothing.
         """
-        ts = self.chart.time_scale() if callable(self.chart.time_scale) else self.chart.time_scale
-        try:
-            ts.fit_content()
-        except Exception:
-            self._scroll_to_latest_locked()
+        return
 
     def _scroll_to_latest_locked(self) -> None:
+        # Retained ONLY for manual calls via scroll_to_latest()
         ts = self.chart.time_scale() if callable(self.chart.time_scale) else self.chart.time_scale
         for mname in ("scroll_to_real_time", "scrollToRealTime"):
             m = getattr(ts, mname, None)
