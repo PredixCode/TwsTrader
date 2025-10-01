@@ -7,7 +7,7 @@ import pandas as pd
 from tws_wrapper.stock import TwsStock
 
 
-class HistoricMarketUpdater:
+class TwsHistoricUpdater:
     """
     IB-driven historical updater.
     - Runs on MAIN THREAD.
@@ -49,31 +49,12 @@ class HistoricMarketUpdater:
         self.overlap_minutes = max(0, int(overlap_minutes))
         self.fallback_tail_rows = max(1, int(fallback_tail_rows))
         self._loop_count = 0
+        self._running = True
 
-    def _wait(self, seconds: float):
-        if self.during_wait is not None:
-            remaining = float(seconds)
-            step = 0.2
-            while remaining > 0:
-                dt = step if remaining >= step else remaining
-                self.during_wait(dt)
-                remaining -= dt
-        else:
-            time.sleep(seconds)
-
-    def _seconds_to_next_minute(self) -> float:
-        now = pd.Timestamp.now()
-        nxt = (now + pd.Timedelta(minutes=1)).floor("min")
-        return max(0.0, (nxt - now).total_seconds())
-
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[HistoricMarketUpdater] {msg}")
-
-    def run_forever_in_main_thread(self):
+    def run(self):
         # First tick immediately; optionally align afterward
         self._tick_once()
-        while True:
+        while self._running:
             try:
                 if self.align_to_period:
                     wait = self._seconds_to_next_minute()
@@ -88,6 +69,10 @@ class HistoricMarketUpdater:
             except Exception as e:
                 self._log(f"ERROR: {e!r}")
                 self._wait(2.0)
+
+    def stop(self):
+        "NOT IMPLEMENTED YET, run() runs in MAIN THREAD!"
+        self._running = False
 
     def _tick_once(self):
         self._loop_count += 1
@@ -122,8 +107,29 @@ class HistoricMarketUpdater:
             last = ohlcv.index[-1]
             self._log(f"Updated history -> rows={len(df)} last={last} interval={self.interval} period={self.period} pushed={len(delta)}")
 
+    def _wait(self, seconds: float):
+        if self.during_wait is not None:
+            remaining = float(seconds)
+            step = 0.2
+            while remaining > 0:
+                dt = step if remaining >= step else remaining
+                self.during_wait(dt)
+                remaining -= dt
+        else:
+            time.sleep(seconds)
 
-class IntraMinuteMarketUpdater:
+    def _seconds_to_next_minute(self) -> float:
+        now = pd.Timestamp.now()
+        nxt = (now + pd.Timedelta(minutes=1)).floor("min")
+        return max(0.0, (nxt - now).total_seconds())
+
+    def _log(self, msg: str):
+        if self.verbose:
+            print(f"[HistoricMarketUpdater] {msg}")
+
+
+
+class TwsIntraMinuteUpdater:
     """
     TWS-driven provisional last-candle:
       - Updates ONLY the current minute bar on each poll (e.g., every 5–15s) when price changes.
@@ -184,7 +190,7 @@ class IntraMinuteMarketUpdater:
         if self.is_running():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="TWS-Provisional-Loop", daemon=self.daemon)
+        self._thread = threading.Thread(target=self._run, name="TwsIntraMinuteUpdater-Loop", daemon=self.daemon)
         self._thread.start()
 
     def stop(self, timeout: Optional[float] = 5.0) -> None:
@@ -198,7 +204,6 @@ class IntraMinuteMarketUpdater:
         return bool(t and t.is_alive())
 
     # ---------- internals ----------
-
     def _run(self) -> None:
         try:
             self._tick(force=True)
@@ -208,7 +213,7 @@ class IntraMinuteMarketUpdater:
                     break
                 self._tick(force=False)
         except Exception as e:
-            print(f"[TWS-Provisional] ERROR in loop: {e!r}")
+            print(f"[TwsIntraMinuteUpdater] ERROR in loop: {e!r}")
 
     def _tick(self, *, force: bool) -> None:
         snap = self.stock.snapshot()  # {'symbol','bid','ask','last','mid','bidSize','askSize','lastSize'}
@@ -275,7 +280,7 @@ class IntraMinuteMarketUpdater:
             self._last_pushed_close = float(self._c)
             if self.verbose:
                 ts_local = datetime.now().strftime("%H:%M:%S")
-                print(f"{ts_local} [TWS-Provisional:{log_reason}] {self._minute_key} "
+                print(f"{ts_local} [TwsIntraMinuteUpdater:{log_reason}] {self._minute_key} "
                       f"O={self._o} H={self._h} L={self._l} C={self._c} V={self._v}")
         except TypeError:
             # Minimal positional fallback if your signature differs
@@ -283,9 +288,9 @@ class IntraMinuteMarketUpdater:
                 self.view.upsert_bar(self._minute_key, float(self._o), float(self._h), float(self._l), float(self._c), float(self._v))
                 self._last_pushed_close = float(self._c)
             except Exception as e:
-                print(f"[TWS-Provisional] upsert fallback failed: {e!r}")
+                print(f"[TwsIntraMinuteUpdater] upsert fallback failed: {e!r}")
         except Exception as e:
-            print(f"[TWS-Provisional] upsert error: {e!r}")
+            print(f"[TwsIntraMinuteUpdater] upsert error: {e!r}")
 
     def _drop_prev_minute(self, ts: pd.Timestamp) -> None:
         """
@@ -299,37 +304,9 @@ class IntraMinuteMarketUpdater:
                 self._log_drop(ts, source="custom")
                 return
 
-            # Common method names on custom LiveGraph
-            for name in ("remove_bar", "delete_bar", "drop_bar"):
-                fn = getattr(self.view, name, None)
-                if callable(fn):
-                    fn(ts)
-                    self._log_drop(ts, source=name)
-                    return
-
-            # Fallback: drop from dataframe
-            df = getattr(self.view, "dataframe", None)
-            if df is not None and ts in df.index:
-                new_df = df.drop(index=[ts], errors="ignore")
-                # If LiveGraph exposes a setter, prefer it
-                if callable(getattr(self.view, "set_dataframe", None)):
-                    self.view.set_dataframe(new_df)
-                else:
-                    # Last resort: mutate and hope the view observes it
-                    self.view.dataframe = new_df
-                    # If a refresh/replot method exists, call it
-                    for name in ("refresh", "replot", "redraw"):
-                        fn = getattr(self.view, name, None)
-                        if callable(fn):
-                            fn()
-                            break
-                self._log_drop(ts, source="dataframe-drop")
-                return
-
-            # If nothing worked, at least log
-            print(f"[TWS-Provisional] WARN: Could not drop provisional bar {ts} (no supported method).")
+            print(f"[TwsIntraMinuteUpdater] WARN: Could not drop provisional bar {ts} (no supported method).")
         except Exception as e:
-            print(f"[TWS-Provisional] drop_prev_minute error for {ts}: {e!r}")
+            print(f"[TwsIntraMinuteUpdater] drop_prev_minute error for {ts}: {e!r}")
 
     def _cum_volume_from_snap(self, snap: Dict[str, Any]) -> Optional[float]:
         """

@@ -4,33 +4,21 @@ import pandas as pd
 from lightweight_charts import Chart
 
 
-class LiveGraph:
-    """
-    Passive chart view for OHLC data (1-minute or higher timeframe).
-    - No internal fetching or threads.
-    - Accepts initial DataFrame and incremental updates from the outside.
-    - Keeps an internal copy of the DataFrame for convenience and labels.
-    """
-
+class TradeChart:
     def __init__(self, title: str) -> None:
         self._chart_lock = threading.RLock()
 
-        # Canonical data for the view (already display-shifted by the hub)
         self.dataframe = None
 
-        # Series + trade markers state
         self.chart: Optional[Chart] = None
         self.candles = None
         self.volume = None
         self._markers: List[Dict] = []
         self._markers_lock = threading.Lock()
 
-        # Build chart and render initial data
         self._construct_chart(title)
-        self.set_data(self.dataframe)
 
     # ---------- Public API ----------
-
     def show(self, block: bool = False) -> None:
         with self._chart_lock:
             if self.chart:
@@ -261,17 +249,15 @@ class LiveGraph:
                 self.volume.set_data(self._df_to_volume_bars(self.dataframe))
             except Exception:
                 pass
-
         self._apply_markers_locked()
 
     @staticmethod
     def _df_to_lw_bars(df: pd.DataFrame) -> List[Dict]:
         """
-        Convert DataFrame to lightweight-charts candle bars (fast path).
+        Convert DataFrame to lightweight-charts candle bars.
         """
         if df is None or df.empty:
             return []
-        # itertuples is faster and avoids dtype surprises
         out = []
         for ts, o, h, l, c in zip(
             df.index,
