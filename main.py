@@ -3,35 +3,17 @@ from ib_insync import util
 util.logToConsole()
 
 from tws_wrapper.connection import TwsConnection
-from core.bot import UnifiedTradingBot, BotConfig, SymbolMapping
+from gui import GUI
 from core.strategy.sfi_charlie import SfiCharlieStrategy, SfiCharlieConfig
 
 if __name__ == "__main__":
-    mapping = SymbolMapping(
-        yf_symbol="RHM.DE",
-        ib_symbol="RHM",
-        exchange="SMART",
-        currency="EUR",
-        primaryExchange="IBIS"
-    )
+    try:
+        symbol = input("Symbol [default RHM]: ").strip() or "RHM"
+    except EOFError:
+        symbol = "RHM"
 
-    bot_cfg = BotConfig(
-        mapping=mapping,
-        quantity=10,
-        use_limit_orders=True,
-        limit_offset=0.2,
-        tif="DAY",
-        outsideRTH=False,
-        history_period="7d",
-        history_interval="1m",
-        market_data_type=3,   # None=auto-discover
-        wait_for_fills=False,
-        max_position=100,
-        session_window=10000,
-        price_epsilon=0.0,
-        evaluate_on_close=True,  # match TradingView behavior
-        tp_exit_all=True
-    )
+    gui = GUI(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
+    gui.run()
 
     strat_cfg = SfiCharlieConfig(
         atr_period=10,
@@ -43,7 +25,3 @@ if __name__ == "__main__":
         evaluate_on_close=True
     )
     strategy = SfiCharlieStrategy(strat_cfg)
-
-    with TwsConnection(host="127.0.0.1", port=7497, client_id=2, timeout=5) as conn:
-        bot = UnifiedTradingBot(conn, bot_cfg, strategy)
-        bot.run_loop()
