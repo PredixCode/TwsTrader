@@ -3,6 +3,8 @@ from typing import Optional, List, Dict, Iterable
 import pandas as pd
 from lightweight_charts import Chart
 
+from core.normalize import normalize_df
+
 
 class LiveGraph:
     """
@@ -22,11 +24,12 @@ class LiveGraph:
         self._chart_lock = threading.RLock()
 
         # Data
-        self.dataframe = self._normalize_df(initial_df)
+        self.dataframe = normalize_df(initial_df)
 
         # Series + trade markers state
         self.chart: Optional[Chart] = None
         self.candles = None
+        self.volume = None
         self._markers: List[Dict] = []
         self._markers_lock = threading.Lock()
 
@@ -42,10 +45,6 @@ class LiveGraph:
                 self.chart.show(block=block)
 
     def set_data(self, df: pd.DataFrame) -> None:
-        """
-        Replace entire dataset and re-render candles.
-        """
-        df = self._normalize_df(df)
         with self._chart_lock:
             self.dataframe = df
             if self.candles and hasattr(self.candles, "set_data"):
@@ -53,56 +52,13 @@ class LiveGraph:
             elif self.chart and hasattr(self.chart, "set"):
                 self.chart.set(df)
 
-            # Re-apply markers after resetting data
-            self._apply_markers_locked()
-            # IMPORTANT: no auto fit or scroll here anymore
-
-    def apply_delta_df(self, delta_df: pd.DataFrame) -> None:
-        """
-        Merge delta_df into current data and push only changed/new bars to the series.
-        Assumes delta_df is indexed by datetime-like and contains Open/High/Low/Close.
-        """
-        if delta_df is None or delta_df.empty:
-            return
-
-        delta_df = self._normalize_df(delta_df)
-
-        with self._chart_lock:
-            # Merge and de-duplicate by index, keeping last occurrence
-            merged = (
-                pd.concat([self.dataframe, delta_df], axis=0)
-                .sort_index()
-            )
-            merged = merged[~merged.index.duplicated(keep="last")]
-
-            # Identify truly changed/new rows
-            last_idx = self.dataframe.index.max() if len(self.dataframe) else None
-            if last_idx is not None and last_idx in merged.index:
-                changed = merged.loc[merged.index >= last_idx]
-            else:
-                changed = delta_df
-
-            # Update internal state
-            self.dataframe = merged
-
-            # Push incremental updates
-            pushed = False
-            if self.candles and hasattr(self.candles, "update"):
+            # NEW: push volume data if series exists
+            if self.volume and hasattr(self.volume, "set_data") and "Volume" in df.columns:
                 try:
-                    for bar in self._df_to_lw_bars(changed):
-                        self.candles.update(bar)
-                    pushed = True
+                    self.volume.set_data(self._df_to_volume_bars(df))
                 except Exception:
-                    pushed = False
+                    pass
 
-            if not pushed:
-                # Fallback to bulk reset
-                if self.candles and hasattr(self.candles, "set_data"):
-                    self.candles.set_data(self._df_to_lw_bars(self.dataframe))
-                elif self.chart and hasattr(self.chart, "set"):
-                    self.chart.set(self.dataframe)
-
-            # Re-apply markers; DO NOT change viewport automatically
             self._apply_markers_locked()
 
     def upsert_bar(
@@ -112,6 +68,7 @@ class LiveGraph:
         h: float,
         l: float,
         c: float,
+        v: float | None = None,   # NEW
         *,
         floor_to_minute: bool = True
     ) -> None:
@@ -124,19 +81,21 @@ class LiveGraph:
         """
         ts = pd.Timestamp(when)
         if floor_to_minute:
-            ts = ts.floor("T")
-
-        row = pd.DataFrame(
-            {"Open": [float(o)], "High": [float(h)], "Low": [float(l)], "Close": [float(c)]},
-            index=pd.DatetimeIndex([ts])
-        )
+            ts = ts.floor("min")
 
         with self._chart_lock:
-            # Upsert into dataframe
-            self.dataframe.loc[ts, ["Open", "High", "Low", "Close"]] = [float(o), float(h), float(l), float(c)]
+            if "Volume" not in self.dataframe.columns:
+                self.dataframe["Volume"] = 0.0
+
+            vals = [float(o), float(h), float(l), float(c)]
+            if v is not None:
+                self.dataframe.loc[ts, ["Open", "High", "Low", "Close", "Volume"]] = vals + [float(v)]
+            else:
+                self.dataframe.loc[ts, ["Open", "High", "Low", "Close"]] = vals
+
             self.dataframe.sort_index(inplace=True)
 
-            # Push single-bar update to the series
+            # Update candle series
             bar = {
                 "time": ts.to_pydatetime(),
                 "open": float(o),
@@ -153,14 +112,50 @@ class LiveGraph:
                 except Exception:
                     pushed = False
 
+            # Volume update (only if provided and series exists)
+            if v is not None and self.volume and hasattr(self.volume, "update"):
+                try:
+                    self.volume.update({"time": ts.to_pydatetime(), "value": float(v)})
+                except Exception:
+                    # If live update failed, fall back to full redraw
+                    try:
+                        if hasattr(self.volume, "set_data"):
+                            self.volume.set_data(self._df_to_volume_bars(self.dataframe))
+                    except Exception:
+                        pass
+
             if not pushed:
-                # Fallback to bulk reset
+                # Fallback to bulk reset for candles (and volume will be correct via set_data)
+                try:
+                    if self.candles and hasattr(self.candles, "set_data"):
+                        self.candles.set_data(self._df_to_lw_bars(self.dataframe))
+                    elif self.chart and hasattr(self.chart, "set"):
+                        self.chart.set(self.dataframe)
+                except Exception:
+                    pass
+
+    def drop_bar(self, when, *, floor_to_minute=True) -> None:
+        ts = pd.Timestamp(when)
+        if floor_to_minute:
+            ts = ts.floor("min")
+        with self._chart_lock:
+            if self.dataframe is None or self.dataframe.empty or ts not in self.dataframe.index:
+                return
+            self.dataframe = self.dataframe.drop(index=[ts])
+            # Re-render both series
+            try:
                 if self.candles and hasattr(self.candles, "set_data"):
                     self.candles.set_data(self._df_to_lw_bars(self.dataframe))
                 elif self.chart and hasattr(self.chart, "set"):
                     self.chart.set(self.dataframe)
-
-            # DO NOT auto-jump to latest
+            except Exception:
+                pass
+            if self.volume and hasattr(self.volume, "set_data") and "Volume" in self.dataframe.columns:
+                try:
+                    self.volume.set_data(self._df_to_volume_bars(self.dataframe))
+                except Exception:
+                    pass
+            self._apply_markers_locked()
 
     def add_trade_label(
         self,
@@ -299,43 +294,12 @@ class LiveGraph:
                 # Fallback for older wrappers will rely on chart.set()
                 self.candles = getattr(self.chart, "candlestick_series", None)
 
-    @staticmethod
-    def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        - Ensure DatetimeIndex ascending
-        - Case-normalize OHLC to Open/High/Low/Close
-        - Preserve all other columns (e.g., Volume, Dividends, Stock Splits, Adj Close)
-        """
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
-
-        out = df.copy()
-
-        # Ensure datetime index, sorted
-        out.index = pd.DatetimeIndex(out.index)
-        out = out.sort_index()
-
-        # Case-insensitive rename of OHLC; preserve other columns
-        rename = {}
-        for col in out.columns:
-            low = str(col).lower()
-            if low == "open":
-                rename[col] = "Open"
-            elif low == "high":
-                rename[col] = "High"
-            elif low == "low":
-                rename[col] = "Low"
-            elif low == "close":
-                rename[col] = "Close"
-
-        if rename:
-            out = out.rename(columns=rename)
-
-        # Validate required columns
-        required = {"Open", "High", "Low", "Close"}
-        if not required.issubset(set(out.columns)):
-            raise ValueError(f"DataFrame must contain OHLC columns; got columns={list(out.columns)}")
-        return out
+            if hasattr(self.chart, "add_histogram_series"):
+                try:
+                    # Basic volume histogram; adjust options if you want separate scale/pane
+                    self.volume = self.chart.add_histogram_series()
+                except Exception:
+                    self.volume = None
 
     @staticmethod
     def _df_to_lw_bars(df: pd.DataFrame) -> List[Dict]:
@@ -353,6 +317,20 @@ class LiveGraph:
                 "low": float(row["Low"]),
                 "close": float(row["Close"]),
             })
+        return bars
+    
+    def _df_to_volume_bars(self, df: pd.DataFrame):
+        bars = []
+        if df is None or df.empty or "Volume" not in df.columns:
+            return bars
+        for ts, row in df.iterrows():
+            try:
+                bars.append({
+                    "time": pd.Timestamp(ts).to_pydatetime(),
+                    "value": float(row["Volume"]),
+                })
+            except Exception:
+                continue
         return bars
 
     def _apply_markers_locked(self) -> None:

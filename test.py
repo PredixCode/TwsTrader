@@ -87,6 +87,7 @@ def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0)
     print("timeZone:", details.timeZoneId)
     print("tradingHours:", details.tradingHours)
     print("liquidHours:", details.liquidHours)
+    print(details)
 
     # 2) Choose data source + initial history
     yf_stock = YFinanceStock("RHM.DE")  # used for name and YF mode
@@ -114,7 +115,7 @@ def live_graph_with_tws_provisional(source='tws', tz_offset_hours: float = +2.0)
 
     # 4) Start TWS provisional current-minute updater (background)
     def _on_drop_prev_minute(_view, ts):
-        hub.drop_bar(ts)
+        hub_view.drop_bar(ts)
 
     tws_candles = TwsProvisionalCandleUpdater(
         stock=ib_stock,

@@ -46,6 +46,7 @@ class TwsStock:
         currency: str = "EUR",
         primaryExchange: str | None = None,
         market_data_type: int | None = None,
+        market_data_delay_min: int = 0,
         cache: Optional[TwsCache] = None,
     ):
         self.symbol = symbol

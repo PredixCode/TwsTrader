@@ -186,7 +186,7 @@ class TwsProvisionalCandleUpdater:
     def prepare(self) -> None:
         self._prepared = True
         if self.verbose:
-            print("[TWS-Provisional] Prepared (ticker subscribed; ready to update chart).")
+            print("[TWS-Provisional] Prepared: Ticker subscribed.")
 
     def start(self) -> None:
         if self.is_running():

@@ -19,7 +19,11 @@ class TwsConnection:
 
     def connect(self) -> IB:
         if not self.ib.isConnected():
-            self.ib.connect(host=self.host, port=self.port, clientId=self.client_id, timeout=self.timeout)
+            try:
+                self.ib.connect(host=self.host, port=self.port, clientId=self.client_id, timeout=self.timeout)
+            except ConnectionRefusedError:
+                print("[TwsConnection] ERROR: TWS refused the connection. Check: TWS started? Logged in? TWS-API activated? Matching ports TWS-Python?")
+                return None
         return self.ib
 
     def disconnect(self) -> None:

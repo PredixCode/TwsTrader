@@ -1,14 +1,17 @@
+# core/market_data_hub.py
 import threading
 from typing import Optional, Callable, List
 import pandas as pd
+
+from core.normalize import normalize_df, normalize_ts
 
 
 class MarketDataHub:
     """
     Central data store that merges authoritative history and provisional last-minute updates.
-    - Tracks which timestamps are provisional so downstream consumers can ignore them.
-    - Fans out updates to subscribed views (e.g., LiveGraph) and to function subscribers.
-    - New: display_offset_hours shifts timestamps ONLY when notifying views (display-layer only).
+    - Canonical time = UTC-naive
+    - Tracks provisional minutes
+    - Applies display_offset_hours ONLY when notifying views
     """
 
     def __init__(self, initial_df: Optional[pd.DataFrame] = None, display_offset_hours: float = 0.0):
@@ -17,7 +20,7 @@ class MarketDataHub:
         base_df = initial_df if initial_df is not None else pd.DataFrame(
             columns=["Open", "High", "Low", "Close", "Volume"]
         )
-        self._df = self._normalize_df(base_df)
+        self._df = normalize_df(base_df)
         self._provisional = set()
 
         self._view_subs: List[object] = []
@@ -29,25 +32,13 @@ class MarketDataHub:
     # ---------- display offset API ----------
 
     def set_display_offset_hours(self, hours: float) -> None:
-        """
-        Change the display-only time shift (in hours) and immediately refresh views.
-        Positive hours -> shift timestamps later; negative -> earlier.
-        """
         with self._lock:
             self._view_offset = pd.Timedelta(hours=float(hours))
-            self._notify_views_set_locked()  # resend full dataset using new offset
+            self._notify_views_set_locked()
 
     # ---------- subscriptions ----------
 
     def subscribe_view(self, view: object) -> None:
-        """
-        Subscribe a chart-like object that supports:
-          - set_data(df)
-          - apply_delta_df(delta_df) [optional]
-          - upsert_bar(when, o,h,l,c) [optional; preferred for precision]
-          - remove_bar/delete_bar/drop_bar(ts) [optional]
-        On subscribe, the full dataset is pushed (with display offset applied).
-        """
         with self._lock:
             self._view_subs.append(view)
             try:
@@ -88,7 +79,7 @@ class MarketDataHub:
     # ---------- mutations (authoritative history) ----------
 
     def set_data(self, df: pd.DataFrame) -> None:
-        df = self._normalize_df(df)
+        df = normalize_df(df)
         with self._lock:
             self._df = df
             self._provisional.difference_update(df.index)
@@ -98,16 +89,19 @@ class MarketDataHub:
     def apply_delta_df(self, delta_df: pd.DataFrame) -> None:
         if delta_df is None or delta_df.empty:
             return
-        d = self._normalize_df(delta_df)
+        d = normalize_df(delta_df)
 
         with self._lock:
             df = self._df.copy()
+
+            # Keep all existing columns, add any new ones from d
             d = d.dropna(axis=1, how="all")
             for c in d.columns:
                 if c not in df.columns:
                     df[c] = pd.NA
             d_aligned = d.reindex(columns=df.columns)
 
+            # Union index (enlarge-safe), then apply d into df at the same rows
             if not d_aligned.index.isin(df.index).all():
                 df = df.reindex(df.index.union(d_aligned.index))
 
@@ -115,6 +109,7 @@ class MarketDataHub:
             df.sort_index(inplace=True)
             self._df = df
 
+            # Any authoritative row clears provisional flag
             for ts in d_aligned.index:
                 self._provisional.discard(ts)
 
@@ -124,22 +119,19 @@ class MarketDataHub:
     # ---------- mutations (provisional) ----------
 
     def upsert_bar(self, when, o: float, h: float, l: float, c: float, v: float, *, provisional: bool = False) -> None:
-        ts = pd.Timestamp(when)
-        if ts.tz is not None:
-            ts = ts.tz_convert("UTC").tz_localize(None)
+        ts = normalize_ts(when, floor_to_minute=False)  # adapter already floors if requested
 
+        # Minimal row to send as delta to views (avoid double normalization)
         row = pd.DataFrame(
             {"Open": [float(o)], "High": [float(h)], "Low": [float(l)], "Close": [float(c)], "Volume": [float(v)]},
             index=pd.DatetimeIndex([ts])
         )
-        row = self._normalize_df(row)
 
         with self._lock:
             df = self._df.copy()
             if "Volume" not in df.columns:
                 df["Volume"] = 0.0
 
-            # Enlarge-safe scalar assignment
             df.loc[ts, ["Open", "High", "Low", "Close", "Volume"]] = [float(o), float(h), float(l), float(c), float(v)]
             df.sort_index(inplace=True)
             self._df = df
@@ -149,17 +141,18 @@ class MarketDataHub:
             else:
                 self._provisional.discard(ts)
 
-            # Notify views with single-row delta (shifted for display)
             self._notify_views_delta_locked(row)
             self._notify_fns_locked(delta_df=row)
 
     def drop_bar(self, ts) -> None:
-        key = pd.Timestamp(ts)
+        key = normalize_ts(ts, floor_to_minute=True)
         with self._lock:
             if key in self._df.index:
                 self._df = self._df.drop(index=[key], errors="ignore")
             self._provisional.discard(key)
+
             self._notify_views_drop_or_set_locked(removed_key=key)
+
             removed_df = pd.DataFrame(index=pd.DatetimeIndex([key]), columns=self._df.columns)
             self._notify_fns_locked(delta_df=removed_df)
 
@@ -180,11 +173,32 @@ class MarketDataHub:
         delta_for_view = self._shift_index(delta_df)
         for v in list(self._view_subs):
             pushed = False
+
             if hasattr(v, "upsert_bar"):
                 try:
                     for ts, row in delta_df.iterrows():
                         ts_view = self._shift_ts(ts)
-                        v.upsert_bar(ts_view, float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), floor_to_minute=False)
+                        o = float(row["Open"])
+                        h = float(row["High"])
+                        l = float(row["Low"])
+                        c = float(row["Close"])
+                        # Volume is optional; if missing/NA, treat as 0
+                        vol = float(row["Volume"]) if "Volume" in row and pd.notna(row["Volume"]) else 0.0
+
+                        did = False
+                        # First try with volume
+                        try:
+                            v.upsert_bar(ts_view, o, h, l, c, vol, floor_to_minute=False)
+                            did = True
+                        except TypeError:
+                            # Fallback: old signature without volume
+                            v.upsert_bar(ts_view, o, h, l, c, floor_to_minute=False)
+                            did = True
+
+                        if not did:
+                            # If neither worked, bail to bulk path below
+                            raise RuntimeError("view.upsert_bar did not accept expected signatures")
+
                     pushed = True
                 except Exception:
                     pushed = False
@@ -240,9 +254,6 @@ class MarketDataHub:
     # ---------- internals ----------
 
     def _df_for_view_locked(self) -> pd.DataFrame:
-        """
-        Return a copy of the hub df shifted by display offset for the view.
-        """
         if self._view_offset == pd.Timedelta(0):
             return self._df.copy()
         out = self._df.copy()
@@ -258,33 +269,3 @@ class MarketDataHub:
 
     def _shift_ts(self, ts: pd.Timestamp) -> pd.Timestamp:
         return pd.Timestamp(ts) + self._view_offset
-
-    @staticmethod
-    def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-        out = df.copy()
-        idx = pd.DatetimeIndex(out.index)
-        if idx.tz is not None:
-            idx = idx.tz_convert("UTC").tz_localize(None)
-        out.index = idx.sort_values()
-
-        rename = {}
-        for c in out.columns:
-            lc = str(c).lower()
-            if lc == "open":   rename[c] = "Open"
-            elif lc == "high": rename[c] = "High"
-            elif lc == "low":  rename[c] = "Low"
-            elif lc == "close": rename[c] = "Close"
-            elif lc == "volume": rename[c] = "Volume"
-        if rename:
-            out = out.rename(columns=rename)
-
-        for col in ("Open", "High", "Low", "Close"):
-            if col not in out.columns:
-                raise ValueError("DF must contain Open/High/Low/Close")
-        if "Volume" not in out.columns:
-            out["Volume"] = 0.0
-
-        out = out[~out.index.duplicated(keep="last")]
-        return out
