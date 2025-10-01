@@ -8,8 +8,8 @@ from ai.pipelines.predict import predict_next_price
 
 
 def build_config(args):
-    ticker = ticker = args.ticker or "BTC-EUR"
-    ticker_file_name = ticker.replace("-","_").replace(".","_")
+    ticker = args.ticker or "RHM"
+    ticker_file_name = ticker.replace("-","_").replace(".","_").replace(" ","")
 
     cfg = {
         "SEED": 42,
@@ -18,14 +18,16 @@ def build_config(args):
         "STRIDE": 1,
         "TEST_RATIO": 0.2,
 
-        "PRICE_FEATURES": ["Open", "High", "Low", "Close"],
-        "PRICE_TARGETS": ["Open", "High", "Low", "Close"],
+        # Include Volume as both input and output
+        "PRICE_FEATURES": ["Open", "High", "Low", "Close", "Volume"],
+        "PRICE_TARGETS":  ["Open", "High", "Low", "Close", "Volume"],
+        "BAR_SIZE": args.barSize,
 
         "PRICE_SEQUENCE_LENGTH": 90,
         "PRICE_EPOCHS": 50,
         "PRICE_BATCH_SIZE": 256,
         "LR": 3e-4,
-        "LR_CONTINUE": 1e-4,  # smaller LR when continuing
+        "LR_CONTINUE": 1e-4,
 
         "PRICE_MODEL_PATH": "ai/models/price_predictor.keras",
         "PRICE_SCALER_X_PATH": f"ai/models/scalers/{ticker_file_name}_X.joblib",
@@ -37,10 +39,11 @@ def build_config(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Next-step OHLCV prediction with a simple LSTM.")
-    parser.add_argument('--ticker', type=str, default=None, help='Ticker symbol (e.g., BTC-EUR, AAPL, TSLA)')
+    parser.add_argument('--ticker', type=str, default=None, help='Ticker symbol (e.g., RHM, BTC-EUR, AAPL, TSLA)')
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'eval', 'predict'],
                         help='Which stage to run.')
+    parser.add_argument('--barSize', type=str, default='1m', help='The time for which one bar tracks OHCLV.')
     parser.add_argument('--eval-mode', type=str, default='one_step',
                         choices=['one_step', 'autoreg'],
                         help='Evaluation mode. one_step uses actual data at each step; autoreg feeds predictions back.')

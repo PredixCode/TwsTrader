@@ -12,7 +12,7 @@ def run_price_training(config):
     print("\n" + "="*20 + " OHLCV PREDICTION TRAINING " + "="*20)
     set_random_seed(config['SEED'])
 
-    df = fetch_price_df(config['TICKER'])
+    df = fetch_price_df(config['TICKER'], config['BAR_SIZE'])
     if df.empty:
         print("No data available to train.")
         return

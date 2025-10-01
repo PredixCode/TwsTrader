@@ -6,7 +6,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 
-from yfinance_wrapper.stock import YFinanceStock
+from tws_wrapper.stock import TwsStock, TwsConnection
 
 
 
@@ -31,13 +31,40 @@ def set_random_seed(seed: int = 42):
     tf.random.set_seed(seed)
 
 
-def fetch_price_df(ticker: str) -> pd.DataFrame:
-    stock = YFinanceStock(ticker)
-    df = stock.get_accurate_max_historical_data()
-    if df.empty:
-        return df
-    # Save last fetch as CSV
-    stock.last_fetch_to_csv()
+# ---- IB/TWS defaults via env (override as needed) ----
+IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
+IB_PORT = int(os.getenv("IB_PORT", "7497"))         # 7497 paper / 7496 live (default IBGW)
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
+IB_CURRENCY = os.getenv("IB_CURRENCY", "EUR")
+
+def _build_tws_stock(ticker: str) -> TwsStock:
+    """
+    Helper to construct a TwsStock with a live TwsConnection.
+    Adjust env vars above or pass your own connection if integrating elsewhere.
+    """
+    conn = TwsConnection(host=IB_HOST, port=IB_PORT, client_id=IB_CLIENT_ID)
+    stock = TwsStock(
+        connection=conn,
+        symbol=ticker,
+        currency=IB_CURRENCY,
+    )
+    return stock
+
+def fetch_price_df(ticker: str, barSize: str) -> pd.DataFrame:
+    """
+    Fetch OHLCV via Interactive Brokers (IB) using TwsStock.
+    Mirrors the previous YFinance behavior:
+      - get merged 5m/2m/1m with period='max'
+      - persist last fetch to CSV
+      - return only ['Open','High','Low','Close','Volume'] with dropna()
+    """
+    stock = _build_tws_stock(ticker)
+    df = stock.get_historical_data(period="max", interval=barSize)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=['Open','High','Low','Close','Volume'])
+
+    # Save last fetch as CSV (same behavior as before)
+    stock.last_fetch_to_csv(df)
 
     cols_needed = ['Open', 'High', 'Low', 'Close', 'Volume']
     df = df[cols_needed].dropna()
@@ -52,24 +79,73 @@ def add_mid_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_price_sequences(df: pd.DataFrame, sequence_length: int, feature_cols: list[str], target_cols: list[str], stride: int = 1):
-    """
-    Builds (X, y) where y is next-step targets for target_cols.
-    y is shifted by -1 so each window predicts the next bar.
-    """
-    df = add_mid_column(df)  # harmless if not used in features/targets
+    df = add_mid_column(df)
+    df = add_time_features(df)  # <--- add this
+
     feat = df[feature_cols].values
     tgt = df[target_cols].shift(-1).dropna().values
-
-    # Align features and targets (drop last feature row to match shifted targets)
     feat = feat[:len(tgt)]
 
     X, y = [], []
     for i in range(sequence_length, len(feat) + 1, stride):
         X.append(feat[i - sequence_length:i])
         y.append(tgt[i - 1])
-    X = np.array(X)
-    y = np.array(y)
-    return X, y
+    return np.array(X), np.array(y)
+
+def add_time_features(df: pd.DataFrame, intraday_threshold_hours: int = 23) -> pd.DataFrame:
+    """
+    Adds cyclical time features based on DatetimeIndex:
+      - T_DOW_S, T_DOW_C
+      - T_MIN_S, T_MIN_C (if intraday cadence detected)
+      - T_MONTH_S, T_MONTH_C
+      - T_DOY_S, T_DOY_C
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    idx = df.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        try:
+            idx = pd.to_datetime(idx)
+            df.index = idx
+        except Exception:
+            return df
+
+    # Detect intraday cadence
+    deltas = idx.to_series().diff().dropna()
+    intraday = False
+    if not deltas.empty:
+        step_delta = deltas.tail(min(1000, len(deltas))).median()
+        intraday = step_delta < pd.Timedelta(hours=intraday_threshold_hours)
+
+    def cyc(values, period):
+        values = np.asarray(values, dtype=float)
+        return np.sin(2 * np.pi * values / period).astype(np.float32), \
+               np.cos(2 * np.pi * values / period).astype(np.float32)
+
+    # Day of week
+    dow = idx.weekday
+    s, c = cyc(dow, 7.0)
+    df["T_DOW_S"], df["T_DOW_C"] = s, c
+
+    # Minute of day (only for intraday bars)
+    if intraday:
+        minute_of_day = idx.hour * 60 + idx.minute
+        s, c = cyc(minute_of_day, 1440.0)
+        df["T_MIN_S"], df["T_MIN_C"] = s, c
+
+    # Month of year
+    month = idx.month - 1
+    s, c = cyc(month, 12.0)
+    df["T_MONTH_S"], df["T_MONTH_C"] = s, c
+
+    # Day of year
+    doy = idx.dayofyear - 1
+    s, c = cyc(doy, 366.0)
+    df["T_DOY_S"], df["T_DOY_C"] = s, c
+
+    return df
 
 
 def time_series_train_test_split(X, y, test_ratio=0.2):

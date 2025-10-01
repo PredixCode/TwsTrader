@@ -6,8 +6,9 @@ class PricePredictorLSTM(Model):
     """
     Predicts next-step prices (multi-output regression) from a sliding window of OHLCV.
     """
-    def __init__(self, seq_len: int, num_features: int, num_targets: int = 3, **kwargs):
+    def __init__(self, seq_len: int, num_features: int, num_targets: int, **kwargs):
         super().__init__(**kwargs)
+        assert num_targets > 0, "num_targets must be > 0"
         self.seq_len = seq_len
         self.num_features = num_features
         self.num_targets = num_targets

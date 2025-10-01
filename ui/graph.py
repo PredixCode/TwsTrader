@@ -1,5 +1,5 @@
 import threading
-from typing import Optional, List, Dict, Iterable
+from typing import Optional, List, Dict
 import pandas as pd
 from lightweight_charts import Chart
 
@@ -15,15 +15,9 @@ class LiveGraph:
     """
 
     def __init__(self, title: str, initial_df: pd.DataFrame) -> None:
-        """
-        Args:
-            title: Chart title.
-            initial_df: DataFrame indexed by datetime-like, with columns Open/High/Low/Close
-                        (case-insensitive; will be normalized).
-        """
         self._chart_lock = threading.RLock()
 
-        # Data
+        # Canonical data for the view (already display-shifted by the hub)
         self.dataframe = normalize_df(initial_df)
 
         # Series + trade markers state
@@ -47,19 +41,7 @@ class LiveGraph:
     def set_data(self, df: pd.DataFrame) -> None:
         with self._chart_lock:
             self.dataframe = df
-            if self.candles and hasattr(self.candles, "set_data"):
-                self.candles.set_data(self._df_to_lw_bars(df))
-            elif self.chart and hasattr(self.chart, "set"):
-                self.chart.set(df)
-
-            # NEW: push volume data if series exists
-            if self.volume and hasattr(self.volume, "set_data") and "Volume" in df.columns:
-                try:
-                    self.volume.set_data(self._df_to_volume_bars(df))
-                except Exception:
-                    pass
-
-            self._apply_markers_locked()
+            self._render_full_locked()
 
     def upsert_bar(
         self,
@@ -68,22 +50,19 @@ class LiveGraph:
         h: float,
         l: float,
         c: float,
-        v: float | None = None,   # NEW
+        v: Optional[float] = None,
         *,
         floor_to_minute: bool = True
     ) -> None:
         """
         Insert or update a single bar by timestamp.
-        Args:
-            when: datetime-like index key (will be normalized).
-            o,h,l,c: OHLC values to set.
-            floor_to_minute: if True, floor timestamp to minute for 1m bars.
         """
         ts = pd.Timestamp(when)
         if floor_to_minute:
             ts = ts.floor("min")
 
         with self._chart_lock:
+            # Ensure Volume column exists
             if "Volume" not in self.dataframe.columns:
                 self.dataframe["Volume"] = 0.0
 
@@ -92,49 +71,36 @@ class LiveGraph:
                 self.dataframe.loc[ts, ["Open", "High", "Low", "Close", "Volume"]] = vals + [float(v)]
             else:
                 self.dataframe.loc[ts, ["Open", "High", "Low", "Close"]] = vals
-
             self.dataframe.sort_index(inplace=True)
 
-            # Update candle series
-            bar = {
-                "time": ts.to_pydatetime(),
-                "open": float(o),
-                "high": float(h),
-                "low": float(l),
-                "close": float(c),
-            }
-
+            # Try incremental candle update
             pushed = False
             if self.candles and hasattr(self.candles, "update"):
                 try:
-                    self.candles.update(bar)
+                    self.candles.update({
+                        "time": ts.to_pydatetime(),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                    })
                     pushed = True
                 except Exception:
                     pushed = False
 
-            # Volume update (only if provided and series exists)
+            # Try incremental volume update (if provided and series exists)
             if v is not None and self.volume and hasattr(self.volume, "update"):
                 try:
                     self.volume.update({"time": ts.to_pydatetime(), "value": float(v)})
                 except Exception:
-                    # If live update failed, fall back to full redraw
-                    try:
-                        if hasattr(self.volume, "set_data"):
-                            self.volume.set_data(self._df_to_volume_bars(self.dataframe))
-                    except Exception:
-                        pass
-
-            if not pushed:
-                # Fallback to bulk reset for candles (and volume will be correct via set_data)
-                try:
-                    if self.candles and hasattr(self.candles, "set_data"):
-                        self.candles.set_data(self._df_to_lw_bars(self.dataframe))
-                    elif self.chart and hasattr(self.chart, "set"):
-                        self.chart.set(self.dataframe)
-                except Exception:
+                    # If live update fails, full redraw below will fix it
                     pass
 
-    def drop_bar(self, when, *, floor_to_minute=True) -> None:
+            if not pushed:
+                # Fallback to full redraw (keeps candles/volume/markers consistent)
+                self._render_full_locked()
+
+    def drop_bar(self, when, *, floor_to_minute: bool = True) -> None:
         ts = pd.Timestamp(when)
         if floor_to_minute:
             ts = ts.floor("min")
@@ -142,20 +108,7 @@ class LiveGraph:
             if self.dataframe is None or self.dataframe.empty or ts not in self.dataframe.index:
                 return
             self.dataframe = self.dataframe.drop(index=[ts])
-            # Re-render both series
-            try:
-                if self.candles and hasattr(self.candles, "set_data"):
-                    self.candles.set_data(self._df_to_lw_bars(self.dataframe))
-                elif self.chart and hasattr(self.chart, "set"):
-                    self.chart.set(self.dataframe)
-            except Exception:
-                pass
-            if self.volume and hasattr(self.volume, "set_data") and "Volume" in self.dataframe.columns:
-                try:
-                    self.volume.set_data(self._df_to_volume_bars(self.dataframe))
-                except Exception:
-                    pass
-            self._apply_markers_locked()
+            self._render_full_locked()
 
     def add_trade_label(
         self,
@@ -164,19 +117,13 @@ class LiveGraph:
         price: Optional[float] = None,
         text: Optional[str] = None,
         *,
-        use_marker: bool = False,        # markers are hover-only; leave False to rely on visible lines/segments
-        show_price_label: bool = True,   # horizontal line with label at trade price
-        show_price_stub: bool = True,    # short segment at candle time
+        use_marker: bool = False,
+        show_price_label: bool = True,
+        show_price_stub: bool = True,
         stub_bars: int = 2,
         line_style: str = 'dashed',
         line_width: int = 1,
     ) -> None:
-        """
-        Visible, price-anchored label at trade time:
-          - optional marker (hover-only)
-          - horizontal line at price with label
-          - short segment starting at the candle time
-        """
         with self._chart_lock:
             if self.dataframe is None or len(self.dataframe) == 0:
                 return
@@ -245,7 +192,6 @@ class LiveGraph:
                     pass
 
     def scroll_to_latest(self) -> None:
-        # Manual-only method; call this from UI/user action if you want to jump right.
         with self._chart_lock:
             self._scroll_to_latest_locked()
 
@@ -266,10 +212,10 @@ class LiveGraph:
                     "fixLeftEdge": False,
                     "fixRightEdge": False,
                     "lockVisibleTimeRangeOnResize": False,
-                    "shiftVisibleRangeOnNewBar": False,  # prevents auto-shift on new bars
+                    "shiftVisibleRangeOnNewBar": False,
                 },
                 "rightPriceScale": {
-                    "autoScale": False,  # prevents auto price rescale
+                    "autoScale": False,
                     "scaleMargins": {"top": 0.05, "bottom": 0.05},
                     "entireTextOnly": False,
                     "borderVisible": True
@@ -291,52 +237,71 @@ class LiveGraph:
             if hasattr(self.chart, "add_candlestick_series"):
                 self.candles = self.chart.add_candlestick_series()
             else:
-                # Fallback for older wrappers will rely on chart.set()
                 self.candles = getattr(self.chart, "candlestick_series", None)
 
+            # Volume histogram series (if supported)
             if hasattr(self.chart, "add_histogram_series"):
                 try:
-                    # Basic volume histogram; adjust options if you want separate scale/pane
                     self.volume = self.chart.add_histogram_series()
                 except Exception:
                     self.volume = None
 
+    def _render_full_locked(self) -> None:
+        """
+        Re-render candles, volume, and markers from self.dataframe.
+        """
+        try:
+            if self.candles and hasattr(self.candles, "set_data"):
+                self.candles.set_data(self._df_to_lw_bars(self.dataframe))
+            elif self.chart and hasattr(self.chart, "set"):
+                self.chart.set(self.dataframe)
+        except Exception:
+            pass
+
+        if self.volume and hasattr(self.volume, "set_data") and "Volume" in self.dataframe.columns:
+            try:
+                self.volume.set_data(self._df_to_volume_bars(self.dataframe))
+            except Exception:
+                pass
+
+        self._apply_markers_locked()
+
     @staticmethod
     def _df_to_lw_bars(df: pd.DataFrame) -> List[Dict]:
         """
-        Convert DataFrame to a list of dicts for lightweight-charts.
+        Convert DataFrame to lightweight-charts candle bars (fast path).
         """
-        bars: List[Dict] = []
         if df is None or df.empty:
-            return bars
-        for ts, row in df.iterrows():
-            bars.append({
+            return []
+        # itertuples is faster and avoids dtype surprises
+        out = []
+        for ts, o, h, l, c in zip(
+            df.index,
+            df["Open"].astype(float),
+            df["High"].astype(float),
+            df["Low"].astype(float),
+            df["Close"].astype(float),
+        ):
+            out.append({
                 "time": pd.Timestamp(ts).to_pydatetime(),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
+                "open": float(o),
+                "high": float(h),
+                "low": float(l),
+                "close": float(c),
             })
-        return bars
-    
-    def _df_to_volume_bars(self, df: pd.DataFrame):
-        bars = []
+        return out
+
+    @staticmethod
+    def _df_to_volume_bars(df: pd.DataFrame) -> List[Dict]:
         if df is None or df.empty or "Volume" not in df.columns:
-            return bars
-        for ts, row in df.iterrows():
-            try:
-                bars.append({
-                    "time": pd.Timestamp(ts).to_pydatetime(),
-                    "value": float(row["Volume"]),
-                })
-            except Exception:
-                continue
-        return bars
+            return []
+        out = []
+        vol = df["Volume"].astype(float)
+        for ts, v in zip(df.index, vol):
+            out.append({"time": pd.Timestamp(ts).to_pydatetime(), "value": float(v)})
+        return out
 
     def _apply_markers_locked(self) -> None:
-        """
-        Re-apply stored markers after any chart.set / data reset.
-        """
         with self._markers_lock:
             markers = list(self._markers)
 
@@ -371,15 +336,7 @@ class LiveGraph:
                     pass
                 return
 
-    def _fit_or_scroll_to_latest_locked(self) -> None:
-        """
-        No-op: previously fit content or scrolled to latest.
-        Left in place for compatibility but intentionally does nothing.
-        """
-        return
-
     def _scroll_to_latest_locked(self) -> None:
-        # Retained ONLY for manual calls via scroll_to_latest()
         ts = self.chart.time_scale() if callable(self.chart.time_scale) else self.chart.time_scale
         for mname in ("scroll_to_real_time", "scrollToRealTime"):
             m = getattr(ts, mname, None)
@@ -391,10 +348,6 @@ class LiveGraph:
                     pass
 
     def _offset_time_by_bars(self, time_dt, bars: int):
-        """
-        Returns the timestamp bars steps to the right within the existing index.
-        Falls back to the original time if we can't find a clean offset.
-        """
         try:
             t = pd.Timestamp(time_dt)
             idx = self.dataframe.index
@@ -408,9 +361,6 @@ class LiveGraph:
 
     @staticmethod
     def _to_marker_time(when):
-        """
-        Return a Python datetime (tz-aware if available) for marker placement.
-        """
         if isinstance(when, pd.Timestamp):
             return when.to_pydatetime()
         if hasattr(when, "isoformat"):

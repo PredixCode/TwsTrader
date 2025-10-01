@@ -2,9 +2,10 @@ Main Bot:
    python main.py
 
 AI:
-  python run_ai.py --mode train --ticker BTC-EUR
+  python run_ai.py --mode train --ticker RHM --barSize 1m
   --mode: {train, eval, predict}
-  --ticker: any yfinance ticker, default=BTC-EUR
+  --ticker: any tws ticker, default=RHM
+  --barSize: The time for which one bar tracks OHCLV.
 
   optional:
   --eval-mode: {one_step, autoreg} default=one_step

@@ -33,7 +33,7 @@ def evaluate_price_model(config, mode: str = 'one_step'):
     print("\n" + "="*20 + f" OHLC PREDICTION EVALUATION [{mode}] " + "="*20)
 
     # 1) Load recent data
-    df = fetch_price_df(config['TICKER'])
+    df = fetch_price_df(config['TICKER'], config['BAR_SIZE'])
     if df.empty:
         print("No data available to evaluate.")
         return
