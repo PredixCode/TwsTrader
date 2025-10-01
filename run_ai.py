@@ -44,7 +44,7 @@ def main():
                         choices=['train', 'eval', 'predict'],
                         help='Which stage to run.')
     parser.add_argument('--barSize', type=str, default='1m', help='The time for which one bar tracks OHCLV.')
-    parser.add_argument('--eval-mode', type=str, default='one_step',
+    parser.add_argument('--evalMode', type=str, default='one_step',
                         choices=['one_step', 'autoreg'],
                         help='Evaluation mode. one_step uses actual data at each step; autoreg feeds predictions back.')
     parser.add_argument('--fresh', action='store_true', help='Ignore saved model/scalers and start fresh training')
@@ -59,7 +59,7 @@ def main():
     if args.mode == 'train':
         run_price_training(config)
     elif args.mode == 'eval':
-        evaluate_price_model(config, mode=args.eval_mode)
+        evaluate_price_model(config, mode=args.evalMode)
     elif args.mode == 'predict':
         predict_next_price(config)
 

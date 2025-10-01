@@ -32,21 +32,16 @@ def set_random_seed(seed: int = 42):
 
 
 # ---- IB/TWS defaults via env (override as needed) ----
-IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
-IB_PORT = int(os.getenv("IB_PORT", "7497"))         # 7497 paper / 7496 live (default IBGW)
-IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
-IB_CURRENCY = os.getenv("IB_CURRENCY", "EUR")
 
-def _build_tws_stock(ticker: str) -> TwsStock:
+def _build_tws_stock(ticker: str, currency="EUR") -> TwsStock:
     """
     Helper to construct a TwsStock with a live TwsConnection.
     Adjust env vars above or pass your own connection if integrating elsewhere.
     """
-    conn = TwsConnection(host=IB_HOST, port=IB_PORT, client_id=IB_CLIENT_ID)
     stock = TwsStock(
-        connection=conn,
+        connection=TwsConnection(),
         symbol=ticker,
-        currency=IB_CURRENCY,
+        currency=currency
     )
     return stock
 

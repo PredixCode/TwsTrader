@@ -8,7 +8,7 @@ AI:
   --barSize: The time for which one bar tracks OHCLV.
 
   optional:
-  --eval-mode: {one_step, autoreg} default=one_step
+  --evalMode: {one_step, autoreg} default=one_step
   --fresh (only training): discard the old model and start training a new one
 
   debug:

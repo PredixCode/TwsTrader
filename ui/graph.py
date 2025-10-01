@@ -3,8 +3,6 @@ from typing import Optional, List, Dict
 import pandas as pd
 from lightweight_charts import Chart
 
-from core.normalize import normalize_df
-
 
 class LiveGraph:
     """
@@ -14,11 +12,11 @@ class LiveGraph:
     - Keeps an internal copy of the DataFrame for convenience and labels.
     """
 
-    def __init__(self, title: str, initial_df: pd.DataFrame) -> None:
+    def __init__(self, title: str) -> None:
         self._chart_lock = threading.RLock()
 
         # Canonical data for the view (already display-shifted by the hub)
-        self.dataframe = normalize_df(initial_df)
+        self.dataframe = None
 
         # Series + trade markers state
         self.chart: Optional[Chart] = None
@@ -33,7 +31,7 @@ class LiveGraph:
 
     # ---------- Public API ----------
 
-    def show(self, block: bool = True) -> None:
+    def show(self, block: bool = False) -> None:
         with self._chart_lock:
             if self.chart:
                 self.chart.show(block=block)

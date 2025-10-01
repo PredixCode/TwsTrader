@@ -62,7 +62,13 @@ class TwsStock:
         self.cache = cache or TwsCache()
         self.last_fetch: Optional[pd.DataFrame] = None
 
-    # --------- Live/streaming (unchanged) ---------
+        self.get_ticker()
+
+    @property
+    def details(self):
+        return self.conn.connect().reqContractDetails(self.qualify())[0]
+
+    # --------- Live/streaming ---------
     def _subscribe(self, md_type: int) -> Ticker:
         ib = self.conn.connect()
         self.qualify()
@@ -74,9 +80,14 @@ class TwsStock:
     def qualify(self) -> Contract:
         ib = self.conn.connect()
         if not self._qualified:
-            [qualified] = ib.qualifyContracts(self.contract)
-            self.contract = qualified
-            self._qualified = True
+            try:
+                [qualified] = ib.qualifyContracts(self.contract)
+                self.contract = qualified
+                self._qualified = True
+            except ValueError as ve:
+                print("[Stock] ERROR: Stock configuration invalid. Can't qualify contract!")
+                raise ve
+            
         return self.contract
 
     def get_min_tick(self) -> float:
@@ -132,6 +143,11 @@ class TwsStock:
         if ticker is None:
             raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock.")
         return ticker
+    
+    def get_details(self):
+        ib = self.conn.connect()
+        contract = self.qualify()
+        details = ib.reqContractDetails(contract)
 
     def snapshot(self) -> dict:
         t = self.get_ticker()
@@ -175,7 +191,7 @@ class TwsStock:
     ) -> pd.DataFrame:
         """
         Mirror FinanceStock.get_historical_data, but fetch via IB and cache results.
-        Returns a DataFrame with columns: Open, High, Low, Close, Volume, Dividends, Stock Splits
+        Returns a DataFrame with columns: Open, High, Low, Close, Volume
         Index is UTC-naive DatetimeIndex (sorted, deduped).
         """
         ib = self.conn.connect()
@@ -193,17 +209,17 @@ class TwsStock:
         self.last_fetch = df.copy()
         return df
 
-    def get_accurate_max_historical_data(self) -> pd.DataFrame:
+    def get_accurate_max_historical_data(self, useRTH=False) -> pd.DataFrame:
         """
-        Fetch 5m, 2m, then 1m with period='max' and merge, so higher resolution
+        Fetch 15m, 5m, 2m, then 1m with period='max' and merge, so higher resolution
         overwrites overlapping coarse bars (exactly like the yfinance wrapper).
         """
         
         intervals: List[str] = ["5m", "2m", "1m"]
-        print(f"[TwsStock] --- Retrieving accurate market data ({self.symbol} - interval={intervals}) ---")
+        print(f"[TwsStock] --- Retrieving accurate market data ({self.symbol} - intervals={intervals}, useRTH={useRTH}) ---")
         frames: List[pd.DataFrame] = []
         for interval in intervals:
-            df = self.get_historical_data(period="max", interval=interval)
+            df = self.get_historical_data(period="max", interval=interval, useRTH=useRTH)
             if not df.empty:
                 frames.append(df)
 
@@ -244,7 +260,7 @@ class TwsStock:
         combined_df.sort_index(inplace=True)
         merged_df = combined_df[~combined_df.index.duplicated(keep="last")]
         # Ensure standard columns/order for uniformity
-        std_cols = ["Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]
+        std_cols = ["Open", "High", "Low", "Close", "Volume"]
         for c in std_cols:
             if c not in merged_df.columns:
                 merged_df[c] = pd.NA
