@@ -2,6 +2,7 @@ General:
  - Generalize/Unify logging
 
 Chart:
+ - pipline for bot
  - trend lines
  - timer (until next refresh)
  - include AI predictions (grey bars)
@@ -10,7 +11,7 @@ Chart:
  - make seperate GUI to configure chart at runtime (trend lines, timer on/off, Stock,...)
 
 Tws:
- - run historic updater in its own thread
+ - run historic updater in its own thread [DONE]
  - Simplify wrappers
  - Test trading execution + develop further
 

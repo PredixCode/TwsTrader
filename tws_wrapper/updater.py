@@ -1,21 +1,30 @@
+import asyncio
 import threading
 import time
-from datetime import datetime
-from typing import Optional, Callable, Dict, Any, Tuple
 import pandas as pd
 
+from datetime import datetime
+from typing import Optional, Callable, Dict, Any, Tuple
+from concurrent.futures import Future
+
+
 from tws_wrapper.stock import TwsStock
+
 
 
 class TwsHistoricUpdater:
     """
     IB-driven historical updater.
-    - Runs on MAIN THREAD.
+    - Can run on MAIN THREAD (run()) or in a BACKGROUND THREAD (start()).
     - Periodically calls TwsStock.get_historical_data(period, interval) which uses TwsFetchCache
       and increments the tail with overlap.
     - Pushes only OHLC to the chart via view.apply_delta_df(...).
     - Optionally persists last_fetch to CSV.
-    - during_wait(dt) is called so you can ib.sleep(dt) to pump IB events while waiting.
+    - during_wait(dt) is called (e.g., ib.sleep(dt)) to pump IB events while waiting.
+
+    Threading notes:
+      - Use start()/stop() for background operation.
+      - run() remains available for synchronous use (backwards compatible).
     """
 
     def __init__(
@@ -25,15 +34,17 @@ class TwsHistoricUpdater:
         *,
         period: str = "max",
         interval: str = "1m",
-        whatToShow="TRADES",
-        useRTH=False,
+        whatToShow: str = "TRADES",
+        useRTH: bool = False,
         poll_secs: float = 60.0,
         persist_csv_every: int = 1,
         align_to_period: bool = True,
         verbose: bool = True,
         during_wait: Optional[Callable[[float], None]] = None,
-        overlap_minutes: int = 5,      # send only the last N minutes each tick
-        fallback_tail_rows: int = 500, # safety if index math fails
+        overlap_minutes: int = 5,       # send only the last N minutes each tick
+        fallback_tail_rows: int = 500,  # safety if index math fails
+        daemon: bool = True,            # thread daemon flag
+        thread_name: str = "TwsHistoricUpdater-Loop",
     ):
         self.stock = stock
         self.view = view
@@ -48,82 +59,194 @@ class TwsHistoricUpdater:
         self.during_wait = during_wait
         self.overlap_minutes = max(0, int(overlap_minutes))
         self.fallback_tail_rows = max(1, int(fallback_tail_rows))
+
+        self.daemon = bool(daemon)
+        self.thread_name = thread_name
+
         self._loop_count = 0
+        self._running = False  # logical running flag
+        self._stop_evt = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    # ---------- public API ----------
+    def start(self) -> None:
+        if self.is_running():
+            return
+        self._stop_evt.clear()
         self._running = True
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name=self.thread_name,
+            daemon=self.daemon,
+        )
+        self._thread.start()
 
-    def run(self):
-        # First tick immediately; optionally align afterward
-        self._tick_once()
-        while self._running:
-            try:
-                if self.align_to_period:
-                    wait = self._seconds_to_next_minute()
-                    wait = max(0.1, wait)  # small buffer
-                else:
-                    wait = self.poll_secs
-                self._wait(wait)
-                self._tick_once()
-            except KeyboardInterrupt:
-                self._log("Interrupted; exiting.")
-                break
-            except Exception as e:
-                self._log(f"ERROR: {e!r}")
-                self._wait(2.0)
+    def run(self) -> None:
+        # Synchronous mode – ensure a loop in this thread too (usually main already has one,
+        # but this keeps behavior consistent if someone calls run() from another thread).
+        if self.is_running():
+            return
+        self._stop_evt.clear()
+        self._running = True
+        try:
+            self._run_loop()
+        finally:
+            self._running = False
+            self._stop_evt.set()
 
-    def stop(self):
-        "NOT IMPLEMENTED YET, run() runs in MAIN THREAD!"
+    def stop(self, timeout: Optional[float] = 5.0) -> None:
+        """
+        Signal the loop to stop and join the thread if needed.
+        """
         self._running = False
+        self._stop_evt.set()
+        t = self._thread
+        if t and t.is_alive():
+            t.join(timeout=timeout)
 
-    def _tick_once(self):
+    def is_running(self) -> bool:
+        t = self._thread
+        return bool(self._running and t and t.is_alive())
+
+    # ---------- internals ----------
+    def _run_loop(self) -> None:
+        # Ensure an asyncio event loop exists for this thread, required by ib_insync.util.run()
+        self._ensure_event_loop()
+
+        try:
+            self._tick_once()
+            while not self._stop_evt.is_set():
+                try:
+                    if self.align_to_period:
+                        wait = max(0.1, self._seconds_to_next_minute())
+                    else:
+                        wait = self.poll_secs
+                    self._wait(wait)
+                    if self._stop_evt.is_set():
+                        break
+                    self._tick_once()
+                except KeyboardInterrupt:
+                    self._log("Interrupted; exiting.")
+                    break
+                except Exception as e:
+                    self._log(f"ERROR: {e!r}")
+                    self._wait(2.0)
+        finally:
+            self._running = False
+
+    def _ensure_event_loop(self) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+    def _tick_once(self) -> None:
         self._loop_count += 1
-        df = self.stock.get_historical_data(period=self.period, interval=self.interval, whatToShow=self.whatToShow, useRTH=self.useRTH)
+        try:
+            # Run the (blocking) stock.get_historical_data call ON THE IB LOOP
+            df = self._call_on_ib_loop(
+                self.stock.get_historical_data,
+                period=self.period,
+                interval=self.interval,
+                whatToShow=self.whatToShow,
+                useRTH=self.useRTH,
+            )
+        except Exception as e:
+            self._log(f"historical fetch error: {e!r}")
+            self._wait(2.0)
+            return
+
         if df is None or df.empty:
             self._log("No data returned.")
             return
 
-        # Only OHLCV to the chart
         ohlcv = df[["Open", "High", "Low", "Close", "Volume"]]
 
-        # Send only a small overlap window to minimize work
-        delta = ohlcv
         try:
             if self.overlap_minutes > 0 and len(ohlcv) > 1:
                 end_ts = ohlcv.index[-1]
                 start_ts = end_ts - pd.Timedelta(minutes=self.overlap_minutes)
                 delta = ohlcv.loc[ohlcv.index >= start_ts]
             else:
-                # Fallback to tail rows
                 delta = ohlcv.tail(self.fallback_tail_rows)
         except Exception:
             delta = ohlcv.tail(self.fallback_tail_rows)
 
-        # Apply data to view
-        self.view.apply_delta_df(delta)
+        try:
+            self.view.apply_delta_df(delta)
+        except Exception as e:
+            self._log(f"apply_delta_df error: {e!r}")
 
         if self.persist_csv_every and (self._loop_count % self.persist_csv_every == 0):
-            self.stock.last_fetch_to_csv(df)
+            try:
+                self.stock.last_fetch_to_csv(df)
+            except Exception as e:
+                self._log(f"CSV persist error: {e!r}")
 
         if self.verbose:
-            last = ohlcv.index[-1]
-            self._log(f"Updated history -> rows={len(df)} last={last} interval={self.interval} period={self.period} pushed={len(delta)}")
+            try:
+                last = ohlcv.index[-1]
+                self._log(
+                    f"Updated history -> rows={len(df)} last={last} "
+                    f"interval={self.interval} period={self.period} pushed={len(delta)}"
+                )
+            except Exception:
+                pass
 
-    def _wait(self, seconds: float):
-        if self.during_wait is not None:
-            remaining = float(seconds)
-            step = 0.2
-            while remaining > 0:
-                dt = step if remaining >= step else remaining
-                self.during_wait(dt)
-                remaining -= dt
-        else:
-            time.sleep(seconds)
+    def _call_on_ib_loop(self, fn, *args, **kwargs):
+        """
+        Execute a synchronous function that internally uses ib_insync on the IB loop thread
+        and return its result to this worker thread.
+        """
+        # Get the IB instance from your TwsConnection wrapper
+        ib = getattr(self.stock.conn, "ib", None)
+        if ib is None or not hasattr(ib, "loop"):
+            # Fallback: last resort, just call here (not recommended)
+            return fn(*args, **kwargs)
+
+        fut: Future = Future()
+
+        def runner():
+            try:
+                res = fn(*args, **kwargs)
+                fut.set_result(res)
+            except Exception as e:
+                fut.set_exception(e)
+
+        try:
+            ib.loop.call_soon_threadsafe(runner)
+        except Exception:
+            # As a backup, execute inline
+            return fn(*args, **kwargs)
+
+        return fut.result()
+
+    def _wait(self, seconds: float) -> None:
+        """
+        Wait with responsiveness to stop events and optional during_wait pumping.
+        """
+        remaining = float(seconds)
+        step = 0.2
+        while remaining > 0 and not self._stop_evt.is_set():
+            dt = step if remaining >= step else remaining
+            if self.during_wait is not None:
+                try:
+                    self.during_wait(dt)
+                except Exception as e:
+                    # Don't crash the loop if the pump errors; fall back to sleep
+                    self._log(f"during_wait error: {e!r}")
+                    time.sleep(dt)
+            else:
+                time.sleep(dt)
+            remaining -= dt
 
     def _seconds_to_next_minute(self) -> float:
         now = pd.Timestamp.now()
         nxt = (now + pd.Timedelta(minutes=1)).floor("min")
         return max(0.0, (nxt - now).total_seconds())
 
-    def _log(self, msg: str):
+    def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"[HistoricMarketUpdater] {msg}")
 
@@ -216,13 +339,13 @@ class TwsIntraMinuteUpdater:
             print(f"[TwsIntraMinuteUpdater] ERROR in loop: {e!r}")
 
     def _tick(self, *, force: bool) -> None:
-        snap = self.stock.snapshot()  # {'symbol','bid','ask','last','mid','bidSize','askSize','lastSize'}
-        price = self._pick_price(snap)
+        quote = self.stock.get_latest_quote()  # {'minute','bid','ask','last','mid'}
+        price = self._pick_price(quote)
         if price is None:
-            self._maybe_log(snap, tag="no-price")
+            self._maybe_log(quote, tag="no-price")
             return
 
-        now_minute = pd.Timestamp.utcnow().floor("min")
+        now_minute = quote["minute"]
 
         # Minute rollover: destroy previous provisional bar, seed new current minute
         if self._minute_key is None or now_minute > self._minute_key:
@@ -234,7 +357,7 @@ class TwsIntraMinuteUpdater:
             self._o = self._h = self._l = self._c = float(price)
 
             # Seed cumulative volume at minute start; minute volume starts at 0
-            self._cum_vol_seed = self._cum_volume_from_snap(snap)
+            self._cum_vol_seed = self._cum_volume_from_snap(quote)
             self._v = 0.0
             self._last_pushed_close = None
 
@@ -251,7 +374,7 @@ class TwsIntraMinuteUpdater:
             self._c = float(price); changed = True
 
         # Recompute minute volume from cumulative
-        cur_cum = self._cum_volume_from_snap(snap)
+        cur_cum = self._cum_volume_from_snap(quote)
         if cur_cum is not None and self._cum_vol_seed is not None:
             minute_vol = max(0.0, float(cur_cum) - float(self._cum_vol_seed))
             if self._v is None or minute_vol != self._v:
@@ -261,36 +384,27 @@ class TwsIntraMinuteUpdater:
         if changed or force:
             self._push_bar(log_reason="update")
         else:
-            self._maybe_log(snap, tag="unchanged")
+            self._maybe_log(quote, tag="unchanged")
 
     def _push_bar(self, log_reason: str) -> None:
+        ts = self._minute_key
+        o = float(self._o); h = float(self._h); l = float(self._l); c = float(self._c); v = float(self._v)
+
+        # If nothing changed vs last pushed close, log a compact duplicate note and return
         if self._last_pushed_close is not None and not self._price_changed(self._c, self._last_pushed_close):
-            self._maybe_log(None, tag="skip-dup")
-            return
-        try:
-            self.view.upsert_bar(
-                when=self._minute_key,
-                o=float(self._o),
-                h=float(self._h),
-                l=float(self._l),
-                c=float(self._c),
-                v=float(self._v),
-                floor_to_minute=False
-            )
-            self._last_pushed_close = float(self._c)
-            if self.verbose:
+            if self.verbose and self.log_every_secs is not None:
                 ts_local = datetime.now().strftime("%H:%M:%S")
-                print(f"{ts_local} [TwsIntraMinuteUpdater:{log_reason}] {self._minute_key} "
-                      f"O={self._o} H={self._h} L={self._l} C={self._c} V={self._v}")
-        except TypeError:
-            # Minimal positional fallback if your signature differs
-            try:
-                self.view.upsert_bar(self._minute_key, float(self._o), float(self._h), float(self._l), float(self._c), float(self._v))
-                self._last_pushed_close = float(self._c)
-            except Exception as e:
-                print(f"[TwsIntraMinuteUpdater] upsert fallback failed: {e!r}")
-        except Exception as e:
-            print(f"[TwsIntraMinuteUpdater] upsert error: {e!r}")
+                sym = getattr(self.stock, "symbol", None) or "?"
+                print(f"{ts_local} [IntraMinuteUpdater:duplicate] {sym} {ts} C={c}")
+            return
+
+        self.view.upsert_bar(ts, o, h, l, c, v, provisional=True)
+        self._last_pushed_close = c
+        if self.verbose:
+            ts_local = datetime.now().strftime("%H:%M:%S")
+            sym = getattr(self.stock, "symbol", None) or "?"
+            print(f"{ts_local} [IntraMinuteUpdater:{log_reason}] {sym} {ts} O={o} H={h} L={l} C={c} V={v}")
+        
 
     def _drop_prev_minute(self, ts: pd.Timestamp) -> None:
         """
@@ -308,13 +422,13 @@ class TwsIntraMinuteUpdater:
         except Exception as e:
             print(f"[TwsIntraMinuteUpdater] drop_prev_minute error for {ts}: {e!r}")
 
-    def _cum_volume_from_snap(self, snap: Dict[str, Any]) -> Optional[float]:
+    def _cum_volume_from_snap(self, quote: Dict[str, Any]) -> Optional[float]:
         """
         Return cumulative day volume if available.
-        Prefer RTVolume totalVolume when present, else fall back to snapshot 'vol'.
+        Prefer RTVolume totalVolume when present, else fall back to quote 'vol'.
         IB RTVolume format: "price;size;time;totalVolume;VWAP;singleTrade"
         """
-        rv = snap.get("rtVolume")
+        rv = quote.get("rtVolume")
         if rv:
             try:
                 parts = str(rv).split(";")
@@ -322,7 +436,7 @@ class TwsIntraMinuteUpdater:
                     return float(parts[3])
             except Exception:
                 pass
-        v = snap.get("vol")
+        v = quote.get("vol")
         try:
             return float(v) if v is not None else None
         except Exception:
@@ -333,23 +447,27 @@ class TwsIntraMinuteUpdater:
             ts_local = datetime.now().strftime("%H:%M:%S")
             print(f"{ts_local} [IntraMinuteUpdater:drop-{source}] removed provisional bar {ts}")
 
-    def _maybe_log(self, snap: Optional[Dict[str, Any]], tag: str) -> None:
+    def _maybe_log(self, quote: Optional[Dict[str, Any]], tag: str) -> None:
         if not self.verbose or self.log_every_secs is None:
             return
         now = time.time()
         if (now - self._last_log_ts) < self.log_every_secs:
             return
         self._last_log_ts = now
-        if snap is None:
-            print(f"[IntraMinuteUpdater] {tag}")
-            return
-        ts_local = datetime.now().strftime("%H:%M:%S")
-        b = snap.get("bid"); a = snap.get("ask"); l = snap.get("last"); m = snap.get("mid")
-        bs = int(snap.get("bidSize") or 0); as_ = int(snap.get("askSize") or 0); ls = int(snap.get("lastSize") or 0)
-        sym = snap.get("symbol")
-        print(f"{ts_local} [IntraMinuteUpdater:{tag}] {sym} bid={b}({bs}) ask={a}({as_}) last={l}({ls}) mid={m}")
 
-    def _pick_price(self, snap: Dict[str, Any]) -> Optional[float]:
+        ts_local = datetime.now().strftime("%H:%M:%S")
+        sym = getattr(self.stock, "symbol", None) or (quote.get("symbol") if quote else None) or "?"
+        cur_min = str(self._minute_key) if self._minute_key is not None else "NA"
+
+        if quote is None:
+            print(f"{ts_local} [IntraMinuteUpdater:{tag}] {sym} minute={cur_min}")
+            return
+
+        b = quote.get("bid"); a = quote.get("ask"); l = quote.get("last"); m = quote.get("mid")
+        bs = int(quote.get("bidSize") or 0); as_ = int(quote.get("askSize") or 0); ls = int(quote.get("lastSize") or 0)
+        print(f"{ts_local} [IntraMinuteUpdater:{tag}] {sym} minute={cur_min} bid={b}({bs}) ask={a}({as_}) last={l}({ls}) mid={m}")
+
+    def _pick_price(self, quote: Dict[str, Any]) -> Optional[float]:
         def pos(x) -> Optional[float]:
             try:
                 xf = float(x)
@@ -360,8 +478,8 @@ class TwsIntraMinuteUpdater:
             return None
 
         # Prefer mid if both bid/ask are positive
-        bid = pos(snap.get("bid"))
-        ask = pos(snap.get("ask"))
+        bid = pos(quote.get("bid"))
+        ask = pos(quote.get("ask"))
         if bid is not None and ask is not None:
             mid = (bid + ask) / 2.0
             if mid > 0:
@@ -369,7 +487,7 @@ class TwsIntraMinuteUpdater:
 
         # Fall back through preferred keys but only accept positive numbers
         for k in self.price_pref:
-            v = pos(snap.get(k))
+            v = pos(quote.get(k))
             if v is not None:
                 return v
 

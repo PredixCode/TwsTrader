@@ -134,7 +134,7 @@ class UnifiedTradingBot:
         return float(x)
 
     def _snapshot_price(self) -> Optional[float]:
-        snap = self.stock.snapshot()
+        snap = self.stock.get_latest_quote()
         price = self._safe_price(snap.get("mid"))
         if price is None:
             price = self._safe_price(snap.get("last"))

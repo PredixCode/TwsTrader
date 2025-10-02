@@ -174,7 +174,7 @@ Key parameters:
 
 ```text
 Intra-minute (live):
-TwsIntraMinuteUpdater (thread) → TwsStock.snapshot()
+TwsIntraMinuteUpdater (thread) → TwsStock.get_latest_quote()
   → MarketDataHub.upsert_bar(provisional=True) → TradeChart
 
 Historical (authoritative):

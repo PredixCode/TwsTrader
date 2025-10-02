@@ -4,18 +4,18 @@ from typing import Optional, Tuple
 from tws_wrapper.connection import TwsConnection
 from tws_wrapper.stock import TwsStock
 from tws_wrapper.updater import TwsHistoricUpdater, TwsIntraMinuteUpdater
-from ui.chart import TradeChart
+from gui.chart import TradeChart
 from core.market_data_hub import MarketDataHub
 
 
 logging.basicConfig(
-    level=logging.WARN,
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
-class GUI:
+class TradeApp:
     """
     Simple GUI wrapper to:
       - Connect to TWS
@@ -50,44 +50,45 @@ class GUI:
         self.intra_minute_updater: Optional[TwsIntraMinuteUpdater] = None
         self.historical_updater: Optional[TwsHistoricUpdater] = None
 
-        self._init_tws(self.symbol)
-        self._init_graph(self.tz_offset_hours, self.use_regular_trading_hours)
-        self._init_updater(self.use_regular_trading_hours)
+        self._init_tws()
+        self._init_graph()
+        self._init_updater()
 
-    def _init_tws(self, symbol: str) -> None:
+    def _init_tws(self) -> None:
         """Initialize TWS connection and stock contract."""
         self.connection = TwsConnection()
         self.stock = TwsStock(
             connection=self.connection,
-            symbol=symbol,
-            #market_data_type=3,  # delayed-frozen if needed; keep original behavior
+            symbol=self.symbol,
         )
-        details = getattr(self.stock, "details", None)
-        long_name = getattr(details, "longName", symbol) if details else symbol
-        logger.info("Initialized TWS for %s (%s)", long_name, symbol)
+        self.stock.get_ticker()
+        details = self.stock.get_details()
+        name = details.longName if details.longName is not None else self.symbol
+        logger.info("Initialized TWS for %s (%s)", name, self.symbol)
         if details:
             logger.debug("Stock details: %s", details)
 
-    def _init_graph(self, tz_offset_hours: float, use_regular_trading_hours: bool) -> None:
+    def _init_graph(self) -> None:
         """Build the chart view and seed it with historical data via the hub."""
         assert self.stock is not None, "Stock must be initialized before graph."
 
-        long_name = getattr(getattr(self.stock, "details", None), "longName", self.symbol)
-        self.view = TradeChart(title=f"TWS - {long_name}")
+        details = self.stock.get_details()
+        name = details.longName if details.longName is not None else self.symbol
+        self.view = TradeChart(title=f"TWS - {name}")
 
         # Seed initial data
         initial_dataframe = self.stock.get_accurate_max_historical_data(
-            useRTH=use_regular_trading_hours
+            useRTH=self.use_regular_trading_hours
         )
         self.hub = MarketDataHub(
             initial_df=initial_dataframe,
-            display_offset_hours=tz_offset_hours,
+            display_offset_hours=self.tz_offset_hours,
         )
         self.hub.subscribe_view(self.view)
         logger.info("Chart and MarketDataHub initialized (RTH=%s, tz_offset=%.2f).",
-                    use_regular_trading_hours, tz_offset_hours)
+                    self.use_regular_trading_hours, self.tz_offset_hours)
 
-    def _init_updater(self, use_regular_trading_hours: bool) -> None:
+    def _init_updater(self) -> None:
         """Configure live and historical updaters."""
         assert self.connection is not None and self.stock is not None and self.hub is not None
 
@@ -102,6 +103,7 @@ class GUI:
             min_change_ticks=0.0,
             verbose=self.verbose,
             on_drop_prev_minute=_on_drop_prev_minute,
+            daemon=False
         )
 
         self.historical_updater = TwsHistoricUpdater(
@@ -109,27 +111,36 @@ class GUI:
             view=self.hub,
             period="max",
             interval="1m",
-            useRTH=use_regular_trading_hours,
+            useRTH=self.use_regular_trading_hours,
             poll_secs=self.historical_poll_secs,
             persist_csv_every=1,
             align_to_period=True,
             verbose=self.verbose,
-            during_wait=lambda dt: self.connection.sleep(dt),  # pump IB while waiting
+            during_wait=None,  # pump IB while waiting
+            daemon=False
         )
         logger.info("Updaters initialized (live=%ss, hist=%ss).",
                     self.intraminute_poll_secs, self.historical_poll_secs)
 
     def run(self) -> None:
-        """Start streaming and historical refresh; block in main thread."""
+        """Start streaming and historical refresh; main thread can continue (e.g., GUI loop)."""
         assert self.view is not None
         assert self.intra_minute_updater is not None
         assert self.historical_updater is not None
 
         try:
             logger.info("Starting GUI...")
-            self.view.show()
+            # Start background updaters first
             self.intra_minute_updater.start()
-            self.historical_updater.run()
+            self.historical_updater.start()
+
+            self.view.show()
+        except Exception  as e:
+            logger.error(e)
+
+        try:
+            while True:
+                self.connection.sleep(0.2)
         except KeyboardInterrupt:
             logger.info("Interrupted by user.")
         finally:
@@ -144,27 +155,20 @@ class GUI:
                 self.intra_minute_updater.stop()
             except Exception as e:
                 logger.exception("Error stopping intra-minute updater: %s", e)
+                quit()
 
         if self.historical_updater is not None:
             try:
                 self.historical_updater.stop()
             except Exception as e:
                 logger.exception("Error stopping historical updater: %s", e)
+                quit()
 
         if self.connection is not None:
             try:
                 self.connection.disconnect()
             except Exception as e:
                 logger.exception("Error closing TWS connection: %s", e)
+                quit()
 
         logger.info("Shutdown complete.")
-
-
-if __name__ == "__main__":
-    try:
-        symbol = input("Symbol [default RHM]: ").strip() or "RHM"
-    except EOFError:
-        symbol = "RHM"
-
-    gui = GUI(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
-    gui.run()

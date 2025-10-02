@@ -4,9 +4,9 @@ from tws_wrapper.stock import TwsStock, TwsConnection
 
 # USAGE examples of wrappers and graphs
 def tws_stock_stream():
-    with TwsConnection(port=7496) as conn:
+    with TwsConnection() as conn:
         feed = TwsStock(conn, symbol="RHM", exchange="SMART", currency="EUR", primaryExchange="IBIS")
-        feed.stream_price(duration_sec=60)
+        feed.stream_price(duration_sec=120)
 
 def tws_trade():
     with TwsConnection() as conn:
