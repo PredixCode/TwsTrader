@@ -60,7 +60,7 @@ class GUI:
         self.stock = TwsStock(
             connection=self.connection,
             symbol=symbol,
-            market_data_type=3,  # delayed-frozen if needed; keep original behavior
+            #market_data_type=3,  # delayed-frozen if needed; keep original behavior
         )
         details = getattr(self.stock, "details", None)
         long_name = getattr(details, "longName", symbol) if details else symbol

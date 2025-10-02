@@ -16,25 +16,6 @@ from tws_wrapper.connection import TwsConnection
 
 
 # --------------------------
-# Market Data Types
-# --------------------------
-class MarketType(IntEnum):
-    LIVE = 1
-    DELAYED = 3
-    FROZEN = 2
-    DELAYED_FROZEN = 4
-
-    @classmethod
-    def names(cls): return [e.name for e in cls]
-
-    @classmethod
-    def values(cls): return [e.value for e in cls]
-
-    @classmethod
-    def entries(cls): return [(e.name, e.value) for e in cls]
-
-
-# --------------------------
 # TwsStock wrapper
 # --------------------------
 class TwsStock:
@@ -113,7 +94,7 @@ class TwsStock:
 
         def __find_market_for_ticker() -> Ticker | None:
             print("Discovering available market data types (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen) to fetch data.")
-            for md_name, md_value in MarketType.entries():
+            for md_name, md_value in zip(["LIVE","DELAYED"], [1,3]):
                 ticker = self._subscribe(md_value)
                 print(f"Trying market type '{md_name}'...")
                 if __is_valid(ticker):
