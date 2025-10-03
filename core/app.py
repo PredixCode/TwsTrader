@@ -32,7 +32,7 @@ class TradeApp:
         tz_offset_hours: float = 0.0,
         use_regular_trading_hours: bool = False,
         price_pref: Tuple[str, ...] = ("mid", "last", "bid", "ask"),
-        intraminute_poll_secs: float = 1.0,
+        intraminute_poll_secs: float = 2.0,
         historical_poll_secs: int = 60,
         verbose: bool = True,
     ) -> None:
@@ -43,6 +43,7 @@ class TradeApp:
         self.intraminute_poll_secs = intraminute_poll_secs
         self.historical_poll_secs = historical_poll_secs
         self.verbose = verbose
+        self.initial_dataframe = None
 
         # Will be initialized in the helpers
         self.connection: Optional[TwsConnection] = None
@@ -54,7 +55,7 @@ class TradeApp:
 
         self._init_tws()
         self._init_graph()
-        self._init_updater()
+        self._init_threads()
 
     def _init_tws(self) -> None:
         """Initialize TWS connection and stock contract."""
@@ -64,7 +65,8 @@ class TradeApp:
         self.stock = TwsStock(
             connection=self.connection,
             symbol=self.symbol,
-            market_data_type=3,  # delayed-frozen if needed; keep original behavior
+            exchange=stock_config["exchange"],
+            currency=stock_config["currency"],
         )
         self.stock.get_ticker()
         details = self.stock.get_details()
@@ -82,18 +84,18 @@ class TradeApp:
         self.view = TradeChart(title=f"TWS - {name}")
 
         # Seed initial data
-        initial_dataframe = self.stock.get_accurate_max_historical_data(
+        self.initial_dataframe = self.stock.get_accurate_max_historical_data(
             useRTH=self.use_regular_trading_hours
         )
         self.hub = MarketDataHub(
-            initial_df=initial_dataframe,
+            initial_df=self.initial_dataframe,
             display_offset_hours=self.tz_offset_hours,
         )
         self.hub.subscribe_view(self.view)
         logger.info("Chart and MarketDataHub initialized (RTH=%s, tz_offset=%.2f).",
                     self.use_regular_trading_hours, self.tz_offset_hours)
 
-    def _init_updater(self) -> None:
+    def _init_threads(self) -> None:
         """Configure live and historical updaters."""
         assert self.connection is not None and self.stock is not None and self.hub is not None
 
@@ -122,7 +124,6 @@ class TradeApp:
             persist_csv_every=1,
             align_to_period=align_to_period,
             verbose=self.verbose,
-            during_wait=None,  # pump IB while waiting
             daemon=False
         )
         logger.info("Updaters initialized (live=%ss, hist=%ss).",
@@ -178,13 +179,3 @@ class TradeApp:
                 quit()
 
         logger.info("Shutdown complete.")
-
-
-if __name__ == "__main__":
-    try:
-        symbol = input("Symbol [default RHM]: ").strip() or "RHM"
-    except EOFError:
-        symbol = "RHM"
-
-    gui = TradeApp(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
-    gui.run()

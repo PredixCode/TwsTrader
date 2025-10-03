@@ -43,19 +43,6 @@ class TwsStock:
         self.last_fetch: Optional[pd.DataFrame] = None
         self.market_delay_min = 0
 
-    @property
-    def details(self):
-        return self.conn.connect().reqContractDetails(self.qualify())[0]
-
-    # --------- Live/streaming ---------
-    def _subscribe(self, md_type: int) -> Ticker:
-        ib = self.conn.connect()
-        self.qualify()
-        ib.reqMarketDataType(md_type)
-        t = ib.reqMktData(self.contract, "", snapshot=False, regulatorySnapshot=False)
-        ib.sleep(1.0)
-        return t
-
     def qualify(self) -> Contract:
         ib = self.conn.connect()
         if not self._qualified:
@@ -117,19 +104,6 @@ class TwsStock:
             "vol": vol,
         }
 
-    def stream_price(self, duration_sec: int = 60) -> None:
-        print(f"Streaming {self.symbol} for {duration_sec}s (marketDataType={self.market_data_type}).")
-        end_time = time.time() + duration_sec
-        last_printed = None
-        while time.time() < end_time:
-            self.conn.sleep(0.2)
-            quote = self.get_latest_quote()
-            if quote != last_printed:
-                ts_local = datetime.now().strftime("%H:%M:%S")
-                print(f"{ts_local}: {quote}")
-                last_printed = quote
-        print(f"Done streaming ({duration_sec}s).")
-
     # --------- Historical ---------
     def get_historical_data(
         self,
@@ -176,7 +150,7 @@ class TwsStock:
             self.last_fetch = pd.DataFrame()
             return self.last_fetch
 
-        merged = self.__merge_historical_data(frames)
+        merged = self._merge_historical_data(frames)
         self.last_fetch = merged.copy()
         return merged
 
@@ -203,6 +177,29 @@ class TwsStock:
         except Exception as e:
             print(f"Error saving file: {e}")
             return None
+    
+    # --------- Helpers ---------
+    def stream_price(self, duration_sec: int = 60) -> None:
+        print(f"Streaming {self.symbol} for {duration_sec}s (marketDataType={self.market_data_type}).")
+        end_time = time.time() + duration_sec
+        last_printed = None
+        while time.time() < end_time:
+            self.conn.sleep(0.2)
+            quote = self.get_latest_quote()
+            if quote != last_printed:
+                ts_local = datetime.now().strftime("%H:%M:%S")
+                print(f"{ts_local}: {quote}")
+                last_printed = quote
+        print(f"Done streaming ({duration_sec}s).")
+        
+    # --------- Internals ---------
+    def _subscribe(self, md_type: int) -> Ticker:
+        ib = self.conn.connect()
+        self.qualify()
+        ib.reqMarketDataType(md_type)
+        t = ib.reqMktData(self.contract, "", snapshot=False, regulatorySnapshot=False)
+        ib.sleep(1.0)
+        return t
         
     def _get_ticker(self) -> Ticker:
         def __is_valid(t: Ticker) -> bool:
@@ -236,7 +233,7 @@ class TwsStock:
             raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock.")
         return ticker
 
-    def __merge_historical_data(self, dataframes: List[pd.DataFrame]) -> pd.DataFrame:
+    def _merge_historical_data(self, dataframes: List[pd.DataFrame]) -> pd.DataFrame:
         combined_df = pd.concat(dataframes, axis=0)
         combined_df.sort_index(inplace=True)
         merged_df = combined_df[~combined_df.index.duplicated(keep="last")]

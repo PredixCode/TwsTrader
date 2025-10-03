@@ -20,7 +20,6 @@ class TwsHistoricUpdater:
       and increments the tail with overlap.
     - Pushes only OHLC to the chart via view.apply_delta_df(...).
     - Optionally persists last_fetch to CSV.
-    - during_wait(dt) is called (e.g., ib.sleep(dt)) to pump IB events while waiting.
 
     Threading notes:
       - Use start()/stop() for background operation.
@@ -40,7 +39,6 @@ class TwsHistoricUpdater:
         persist_csv_every: int = 1,
         align_to_period: bool = True,
         verbose: bool = True,
-        during_wait: Optional[Callable[[float], None]] = None,
         overlap_minutes: int = 5,       # send only the last N minutes each tick
         fallback_tail_rows: int = 500,  # safety if index math fails
         daemon: bool = True,            # thread daemon flag
@@ -56,7 +54,6 @@ class TwsHistoricUpdater:
         self.persist_csv_every = max(0, int(persist_csv_every))
         self.align_to_period = bool(align_to_period)
         self.verbose = verbose
-        self.during_wait = during_wait
         self.overlap_minutes = max(0, int(overlap_minutes))
         self.fallback_tail_rows = max(1, int(fallback_tail_rows))
 
@@ -118,7 +115,7 @@ class TwsHistoricUpdater:
             while not self._stop_evt.is_set():
                 try:
                     if self.align_to_period:
-                        wait = max(0.1, self._seconds_to_next_minute())
+                        wait = max(0.1, self._seconds_to_next_minute() + 1) #1s buffer
                     else:
                         wait = self.poll_secs
                     self._wait(wait)
@@ -224,21 +221,13 @@ class TwsHistoricUpdater:
 
     def _wait(self, seconds: float) -> None:
         """
-        Wait with responsiveness to stop events and optional during_wait pumping.
+        Wait with responsiveness to stop events.
         """
         remaining = float(seconds)
         step = 0.2
         while remaining > 0 and not self._stop_evt.is_set():
             dt = step if remaining >= step else remaining
-            if self.during_wait is not None:
-                try:
-                    self.during_wait(dt)
-                except Exception as e:
-                    # Don't crash the loop if the pump errors; fall back to sleep
-                    self._log(f"during_wait error: {e!r}")
-                    time.sleep(dt)
-            else:
-                time.sleep(dt)
+            time.sleep(dt)
             remaining -= dt
 
     def _seconds_to_next_minute(self) -> float:
@@ -261,7 +250,6 @@ class TwsIntraMinuteUpdater:
 
     Usage notes:
       - Subscribe on MAIN THREAD first: stock.get_ticker()
-      - Keep ib_insync pumped in main thread (e.g., during_wait=lambda dt: ib.sleep(dt) in your YF loop).
     """
 
     def __init__(
