@@ -1,5 +1,5 @@
 # main.py
-from gui import TradeApp
+from gui.app import TradeApp
 
 
 if __name__ == "__main__":
@@ -8,5 +8,5 @@ if __name__ == "__main__":
     except EOFError:
         symbol = "RHM"
 
-    gui = TradeApp(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
-    gui.run()
+    app = TradeApp(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=True)
+    app.run()

@@ -1,5 +1,6 @@
 import logging
 from typing import Optional, Tuple
+from dataclasses import asdict
 
 import json
 from tws_wrapper.connection import TwsConnection
@@ -70,7 +71,7 @@ class TradeApp:
         name = details.longName if details.longName is not None else self.symbol
         logger.info("Initialized TWS for %s (%s)", name, self.symbol)
         if details:
-            logger.debug("Stock details: %s", details)
+            logger.info("Stock details: %s", json.dumps(asdict(details), indent=4))
 
     def _init_graph(self) -> None:
         """Build the chart view and seed it with historical data via the hub."""
