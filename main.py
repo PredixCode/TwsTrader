@@ -1,5 +1,5 @@
 # main.py
-from gui.app import TradeApp
+from core.app import TradeApp
 
 
 if __name__ == "__main__":

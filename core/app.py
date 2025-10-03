@@ -111,6 +111,7 @@ class TradeApp:
             daemon=False
         )
 
+        align_to_period = False if self.historical_poll_secs != 60 else True
         self.historical_updater = TwsHistoricUpdater(
             stock=self.stock,
             view=self.hub,
@@ -119,7 +120,7 @@ class TradeApp:
             useRTH=self.use_regular_trading_hours,
             poll_secs=self.historical_poll_secs,
             persist_csv_every=1,
-            align_to_period=True,
+            align_to_period=align_to_period,
             verbose=self.verbose,
             during_wait=None,  # pump IB while waiting
             daemon=False

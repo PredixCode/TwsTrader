@@ -123,11 +123,11 @@ class TwsStock:
         last_printed = None
         while time.time() < end_time:
             self.conn.sleep(0.2)
-            snapshot = self.get_latest_quote()
-            if snapshot != last_printed:
+            quote = self.get_latest_quote()
+            if quote != last_printed:
                 ts_local = datetime.now().strftime("%H:%M:%S")
-                print(f"{ts_local}: {snapshot}")
-                last_printed = snapshot
+                print(f"{ts_local}: {quote}")
+                last_printed = quote
         print(f"Done streaming ({duration_sec}s).")
 
     # --------- Historical ---------
