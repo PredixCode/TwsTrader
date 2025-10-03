@@ -1,6 +1,7 @@
 import logging
 from typing import Optional, Tuple
 
+import json
 from tws_wrapper.connection import TwsConnection
 from tws_wrapper.stock import TwsStock
 from tws_wrapper.updater import TwsHistoricUpdater, TwsIntraMinuteUpdater
@@ -15,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class GUI:
+class TradeApp:
     """
     Simple GUI wrapper to:
       - Connect to TWS
@@ -54,12 +55,14 @@ class GUI:
         self._init_graph(self.tz_offset_hours, self.use_regular_trading_hours)
         self._init_updater(self.use_regular_trading_hours)
 
-    def _init_tws(self, symbol: str) -> None:
+    def _init_tws(self) -> None:
         """Initialize TWS connection and stock contract."""
+        with open('tws_wrapper/data/stock_config.json', 'r', encoding='utf-8') as f:
+            stock_config = json.load(f)[self.symbol]
         self.connection = TwsConnection()
         self.stock = TwsStock(
             connection=self.connection,
-            symbol=symbol,
+            symbol=self.symbol,
             market_data_type=3,  # delayed-frozen if needed; keep original behavior
         )
         details = getattr(self.stock, "details", None)
@@ -68,7 +71,7 @@ class GUI:
         if details:
             logger.debug("Stock details: %s", details)
 
-    def _init_graph(self, tz_offset_hours: float, use_regular_trading_hours: bool) -> None:
+    def _init_graph(self) -> None:
         """Build the chart view and seed it with historical data via the hub."""
         assert self.stock is not None, "Stock must be initialized before graph."
 
@@ -77,17 +80,17 @@ class GUI:
 
         # Seed initial data
         initial_dataframe = self.stock.get_accurate_max_historical_data(
-            useRTH=use_regular_trading_hours
+            useRTH=self.use_regular_trading_hours
         )
         self.hub = MarketDataHub(
             initial_df=initial_dataframe,
-            display_offset_hours=tz_offset_hours,
+            display_offset_hours=self.tz_offset_hours,
         )
         self.hub.subscribe_view(self.view)
         logger.info("Chart and MarketDataHub initialized (RTH=%s, tz_offset=%.2f).",
-                    use_regular_trading_hours, tz_offset_hours)
+                    self.use_regular_trading_hours, self.tz_offset_hours)
 
-    def _init_updater(self, use_regular_trading_hours: bool) -> None:
+    def _init_updater(self) -> None:
         """Configure live and historical updaters."""
         assert self.connection is not None and self.stock is not None and self.hub is not None
 
@@ -109,7 +112,7 @@ class GUI:
             view=self.hub,
             period="max",
             interval="1m",
-            useRTH=use_regular_trading_hours,
+            useRTH=self.use_regular_trading_hours,
             poll_secs=self.historical_poll_secs,
             persist_csv_every=1,
             align_to_period=True,
@@ -166,5 +169,5 @@ if __name__ == "__main__":
     except EOFError:
         symbol = "RHM"
 
-    gui = GUI(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
+    gui = TradeApp(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
     gui.run()
