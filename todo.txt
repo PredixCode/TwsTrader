@@ -1,0 +1,26 @@
+General:
+ - Generalize/Unify logging
+
+Chart:
+ - pipline for bot
+ - trend lines
+ - timer (until next refresh)
+ - include AI predictions (grey bars)
+ - refactor markers after initial test
+ - increase max zoom (possibly through bar granularity (1min,15min,1h...))
+ - make seperate GUI to configure chart at runtime (trend lines, timer on/off, Stock,...)
+
+Tws:
+ - run historic updater in its own thread [DONE]
+ - Simplify wrappers
+ - Test trading execution + develop further
+
+Bot:
+ - subsribe Bot to unified dataframe
+ - implement sfi_charlie strategy (test)
+ - develop multiple strategies
+
+AI:
+ - use CUDA
+ - train further
+ - develop more complex framework

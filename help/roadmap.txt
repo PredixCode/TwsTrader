@@ -1,7 +1,0 @@
-- Build live chart:
-    - Connect trading bot to live chart
-    - Use predictions from AI in chart
-
-- AI:
-    - Train generalized or Rheinmetall model
-    - Use predictions from AI in trading bot strategies

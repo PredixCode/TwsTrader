@@ -1,4 +1,4 @@
-### TWS Live Chart + Historical Backfill + AI Price Modeling
+### TWS Live Chart + Historical Backfill + AI Price Modeling + Incomming TradeBot (Realtime+Historical+Strategies+AI) 
 
 A real-time charting and trading toolkit for Interactive Brokers (IB) that:
 - Streams intra-minute prices and draws a provisional current bar.
@@ -174,7 +174,7 @@ Key parameters:
 
 ```text
 Intra-minute (live):
-TwsIntraMinuteUpdater (thread) → TwsStock.snapshot()
+TwsIntraMinuteUpdater (thread) → TwsStock.get_latest_quote()
   → MarketDataHub.upsert_bar(provisional=True) → TradeChart
 
 Historical (authoritative):
