@@ -1,6 +1,8 @@
 import logging
 from typing import Optional, Tuple
+from dataclasses import asdict
 
+import json
 from tws_wrapper.connection import TwsConnection
 from tws_wrapper.stock import TwsStock
 from tws_wrapper.updater import TwsHistoricUpdater, TwsIntraMinuteUpdater
@@ -56,17 +58,20 @@ class TradeApp:
 
     def _init_tws(self) -> None:
         """Initialize TWS connection and stock contract."""
+        with open('tws_wrapper/data/stock_config.json', 'r', encoding='utf-8') as f:
+            stock_config = json.load(f)[self.symbol]
         self.connection = TwsConnection()
         self.stock = TwsStock(
             connection=self.connection,
             symbol=self.symbol,
+            market_data_type=3,  # delayed-frozen if needed; keep original behavior
         )
         self.stock.get_ticker()
         details = self.stock.get_details()
         name = details.longName if details.longName is not None else self.symbol
         logger.info("Initialized TWS for %s (%s)", name, self.symbol)
         if details:
-            logger.debug("Stock details: %s", details)
+            logger.info("Stock details: %s", json.dumps(asdict(details), indent=4))
 
     def _init_graph(self) -> None:
         """Build the chart view and seed it with historical data via the hub."""
@@ -172,3 +177,13 @@ class TradeApp:
                 quit()
 
         logger.info("Shutdown complete.")
+
+
+if __name__ == "__main__":
+    try:
+        symbol = input("Symbol [default RHM]: ").strip() or "RHM"
+    except EOFError:
+        symbol = "RHM"
+
+    gui = TradeApp(symbol=symbol, tz_offset_hours=+2.0, use_regular_trading_hours=False, verbose=False)
+    gui.run()

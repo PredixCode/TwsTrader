@@ -102,6 +102,7 @@ class TwsStock:
     def get_latest_quote(self) -> dict:
         t = self.get_ticker()
         now_minute = pd.Timestamp.utcnow().floor("min")
+        now_minute = now_minute - pd.Timedelta(minutes=self.market_delay_min)
         bid = t.bid if t.bid is not None else -1
         ask = t.ask if t.ask is not None else -1
         last = t.last if t.last is not None else -1
