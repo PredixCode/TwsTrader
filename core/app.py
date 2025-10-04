@@ -1,14 +1,17 @@
 import time
+import json
 import logging
 from typing import Optional, Tuple
 from dataclasses import asdict
 
-import json
+
+from core.bot import TradeBot
+from core.market_data_hub import MarketDataHub
 from tws_wrapper.connection import TwsConnection
 from tws_wrapper.stock import TwsStock
 from tws_wrapper.updater import TwsHistoricUpdater, TwsIntraMinuteUpdater
 from gui.chart import TradeChart
-from core.market_data_hub import MarketDataHub
+
 
 
 logging.basicConfig(
@@ -16,6 +19,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
 
 
 class TradeApp:
@@ -56,6 +60,7 @@ class TradeApp:
 
         self._init_tws()
         self._init_graph()
+        self._init_bot()
         self._init_threads()
 
     def _init_tws(self) -> None:
@@ -95,6 +100,10 @@ class TradeApp:
         self.hub.subscribe_view(self.view)
         logger.info("Chart and MarketDataHub initialized (RTH=%s, tz_offset=%.2f).",
                     self.use_regular_trading_hours, self.tz_offset_hours)
+        
+    def _init_bot(self):
+        self.bot = TradeBot()
+        self.hub.subscribe_view(self.bot)
 
     def _init_threads(self) -> None:
         """Configure live and historical updaters."""
