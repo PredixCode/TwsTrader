@@ -202,17 +202,17 @@ class TwsStock:
         return t
         
     def _get_ticker(self) -> Ticker:
-        def __is_valid(t: Ticker) -> bool:
+        def _is_valid(t: Ticker) -> bool:
             def ok(x):
                 return x is not None and not (isinstance(x, float) and math.isnan(x))
             return ok(getattr(t, "last", None)) or ok(getattr(t, "bid", None)) or ok(getattr(t, "ask", None))
 
-        def __find_market_for_ticker() -> Ticker | None:
+        def _find_market_for_ticker() -> Ticker | None:
             print("Discovering available market data types (1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen) to fetch data.")
             for md_name, md_value in zip(["LIVE","DELAYED"], [1,3]):
                 ticker = self._subscribe(md_value)
                 print(f"Trying market type '{md_name}'...")
-                if __is_valid(ticker):
+                if _is_valid(ticker):
                     self.market_data_type = md_value
                     self._ticker = ticker
                     print(f"Market Type '{md_name}' returned valid data...")
@@ -224,11 +224,11 @@ class TwsStock:
 
         if self.market_data_type is not None:
             t = self._subscribe(self.market_data_type)
-            if __is_valid(t):
+            if _is_valid(t):
                 self._ticker = t
                 return t
 
-        ticker = __find_market_for_ticker()
+        ticker = _find_market_for_ticker()
         if ticker is None:
             raise Exception("ERROR: Ticker cannot be found. This means there is no market data available for the requested Stock.")
         return ticker

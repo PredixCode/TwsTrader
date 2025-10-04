@@ -1,3 +1,4 @@
+import time
 import logging
 from typing import Optional, Tuple
 from dataclasses import asdict
@@ -147,7 +148,7 @@ class TradeApp:
 
         try:
             while True:
-                self.connection.sleep(0.2)
+                time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Interrupted by user.")
         finally:
